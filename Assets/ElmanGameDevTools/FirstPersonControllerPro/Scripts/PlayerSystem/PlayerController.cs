@@ -29,12 +29,14 @@ namespace ElmanGameDevTools.PlayerSystem
         [Header("MOVEMENT SETTINGS")]
         [Tooltip("Скорость ходьбы. Бег по Shift отключён — одна скорость.")]
         public float speed = 3.5f;
-        public float jumpHeight = 1.2f;
-        public float gravity = -25f;
+        [Tooltip("Высота прыжка. Увеличено для агрессивного «невесомого» полёта.")]
+        public float jumpHeight = 4f;
+        [Tooltip("Гравитация. Меньше по модулю = более парящее, «невесомое» ощущение в воздухе.")]
+        public float gravity = -8f;
         [Tooltip("С какой скоростью достигается целевая скорость на земле (ускорение/замедление). Выше — отзывчивее, ниже — инерция.")]
         public float groundAcceleration = 35f;
-        [Tooltip("Насколько можно менять горизонтальную траекторию в воздухе (0 = почти нельзя, 1 = как на земле). Рекомендуется низкое значение.")]
-        [Range(0f, 1f)] public float airControlFactor = 0.03f;
+        [Tooltip("Насколько можно менять горизонтальную траекторию в воздухе. Выше = больше контроля «в полёте», ощущение невесомости.")]
+        [Range(0f, 1f)] public float airControlFactor = 0.45f;
         [Tooltip("Множитель скорости при движении назад (S). 1 = как вперёд, 0.6 = на 40% медленнее.")]
         [Range(0.3f, 1f)] public float backwardSpeedMultiplier = 0.6f;
         [Tooltip("Множитель скорости при стрейфе влево/вправо (A/D). 1 = как вперёд, 0.8 = на 20% медленнее.")]

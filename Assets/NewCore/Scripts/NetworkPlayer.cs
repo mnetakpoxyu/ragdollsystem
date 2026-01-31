@@ -82,9 +82,9 @@ public class NetworkPlayer : MonoBehaviour
             break;
         }
 
-        //Apply extra gravity to charcater to make it less floaty
+        //Слабая дополнительная гравитация в воздухе — для агрессивного «невесомого» полёта
         if (!isGrounded)
-            rigidbody3D.AddForce(Vector3.down * 10);
+            rigidbody3D.AddForce(Vector3.down * 2);
 
         float inputMagnitude = moveInputVector.magnitude;
 
@@ -108,7 +108,7 @@ public class NetworkPlayer : MonoBehaviour
 
         if(isGrounded && isJumpButtonPressed)
         {
-            rigidbody3D.AddForce(Vector3.up * 20, ForceMode.Impulse);
+            rigidbody3D.AddForce(Vector3.up * 48, ForceMode.Impulse);
 
             isJumpButtonPressed = false;
         }
