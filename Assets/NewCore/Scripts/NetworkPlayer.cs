@@ -13,7 +13,10 @@ public class NetworkPlayer : MonoBehaviour
     ConfigurableJoint mainJoint;
 
     //Input
-    private PlayerInputActions inputActions;
+    [SerializeField] InputActionAsset inputActionAsset;
+    InputActionMap playerActionMap;
+    InputAction moveAction;
+    InputAction jumpAction;
     Vector2 moveInputVector = Vector2.zero;
     bool isJumpButtonPressed = false;
 
@@ -30,17 +33,19 @@ public class NetworkPlayer : MonoBehaviour
     //Unity Message | 0 references
     void Start()
     {
-        inputActions = new PlayerInputActions();
-        inputActions.Enable();
+        if (inputActionAsset != null)
+        {
+            playerActionMap = inputActionAsset.FindActionMap("Player");
+            moveAction = playerActionMap.FindAction("Move");
+            jumpAction = playerActionMap.FindAction("Jump");
+            playerActionMap.Enable();
+        }
     }
 
     void OnDestroy()
     {
-        if (inputActions != null)
-        {
-            inputActions.Disable();
-            inputActions.Dispose();
-        }
+        if (playerActionMap != null)
+            playerActionMap.Disable();
     }
 
     // Update is called once per frame
@@ -48,10 +53,11 @@ public class NetworkPlayer : MonoBehaviour
     void Update()
     {
         //Move input (WASD)
-        moveInputVector = inputActions.Player.Move.ReadValue<Vector2>();
+        if (moveAction != null)
+            moveInputVector = moveAction.ReadValue<Vector2>();
 
         //Jump input (Space)
-        if (inputActions.Player.Jump.triggered)
+        if (jumpAction != null && jumpAction.triggered)
             isJumpButtonPressed = true;
     }
 
