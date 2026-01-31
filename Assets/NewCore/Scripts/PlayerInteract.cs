@@ -28,6 +28,7 @@ public class PlayerInteract : MonoBehaviour
     Camera _cam;
     InputAction _interactAction;
     InteractableDoor _currentDoor;
+    ClientNPC _currentClient;
     const string HintMessage = "Взаимодействовать  [E]";
 
     void Start()
@@ -100,9 +101,13 @@ public class PlayerInteract : MonoBehaviour
     void Update()
     {
         InteractableDoor hitDoor = null;
+        ClientNPC hitClient = null;
         Ray ray = _cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
         if (Physics.Raycast(ray, out RaycastHit hit, maxDistance, interactLayers))
+        {
             hitDoor = hit.collider.GetComponentInParent<InteractableDoor>();
+            hitClient = hit.collider.GetComponentInParent<ClientNPC>();
+        }
 
         if (hitDoor != _currentDoor)
         {
@@ -113,10 +118,19 @@ public class PlayerInteract : MonoBehaviour
                 _currentDoor.SetHighlight(true);
         }
 
-        if (hintText != null)
-            hintText.gameObject.SetActive(_currentDoor != null);
+        if (hitClient != _currentClient)
+            _currentClient = hitClient;
 
-        if (_currentDoor != null && _interactAction != null && _interactAction.triggered)
-            _currentDoor.Open();
+        bool showHint = _currentDoor != null || _currentClient != null;
+        if (hintText != null)
+            hintText.gameObject.SetActive(showHint);
+
+        if (_interactAction != null && _interactAction.triggered)
+        {
+            if (_currentDoor != null)
+                _currentDoor.Open();
+            else if (_currentClient != null)
+                _currentClient.OnInteract();
+        }
     }
 }
