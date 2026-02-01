@@ -10,10 +10,12 @@ public class ComputerSpot : MonoBehaviour
     [Header("Обводка при наведении")]
     [Tooltip("Корень стола — обводка вокруг всего этого объекта. Пусто — родитель этого объекта или сам объект.")]
     [SerializeField] Transform highlightTarget;
-    [Tooltip("Цвет обводки вокруг стола.")]
-    [SerializeField] Color outlineColor = new Color(0.2f, 0.9f, 0.4f, 1f);
-    [Tooltip("Толщина обводки в пикселях — ровная линия на экране.")]
-    [SerializeField, Range(0.5f, 8f)] float outlineWidth = 2.5f;
+    [Tooltip("Цвет обводки вокруг стола (свободное место).")]
+    [SerializeField] Color outlineColor = new Color(0.15f, 1f, 0.4f, 1f);
+    [Tooltip("Цвет обводки когда место занято.")]
+    [SerializeField] Color occupiedOutlineColor = new Color(0.9f, 0.15f, 0.15f, 1f);
+    [Tooltip("Толщина обводки в метрах — ровная скорлупа вокруг стола.")]
+    [SerializeField, Range(0.02f, 0.25f)] float outlineWidth = 0.08f;
 
     [Header("Место для посадки")]
     [Tooltip("Стул рядом с этим столом — сюда придёт NPC и сядет. Перетащи объект стула сюда.")]
@@ -91,7 +93,8 @@ public class ComputerSpot : MonoBehaviour
     public void SetHighlight(bool on)
     {
         _highlighted = on;
-        if (_outlineRenderers == null) return;
+        if (_outlineRenderers == null || _outlineMaterial == null) return;
+        _outlineMaterial.SetColor("_OutlineColor", isOccupied ? occupiedOutlineColor : outlineColor);
         foreach (Renderer r in _outlineRenderers)
         {
             if (r != null)
@@ -112,6 +115,7 @@ public class ComputerSpot : MonoBehaviour
         if (npc == null || isOccupied || chair == null) return false;
         npc.GoSitAt(chair);
         isOccupied = true;
+        SetHighlight(_highlighted); // обновить цвет обводки на красный (занято)
         return true;
     }
 }

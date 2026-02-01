@@ -12,7 +12,7 @@ public static class OutlineShaderWarmup
         Shader s = Shader.Find("NewCore/Outline Contour");
         if (s == null) return;
         Material mat = new Material(s);
-        mat.SetFloat("_OutlineWidth", 2.5f);
+        mat.SetFloat("_OutlineWidth", 0.08f);
         mat.SetFloat("_RGBSpeed", 0f);
         GameObject go = GameObject.CreatePrimitive(PrimitiveType.Quad);
         go.name = "OutlineWarmup";

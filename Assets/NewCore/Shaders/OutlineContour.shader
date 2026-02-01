@@ -3,8 +3,8 @@ Shader "NewCore/Outline Contour"
     Properties
     {
         [Header(Outline)]
-        _OutlineWidth ("Outline Width (pixels)", Range(0.5, 8)) = 2.5
-        _OutlineColor ("Outline Color", Color) = (0.2, 0.9, 0.4, 1)
+        _OutlineWidth ("Outline Width", Range(0.02, 0.25)) = 0.08
+        _OutlineColor ("Outline Color", Color) = (0.15, 1, 0.4, 1)
         _RGBSpeed ("RGB Cycle (0 = solid)", Range(0, 2)) = 0
     }
     SubShader
@@ -17,8 +17,7 @@ Shader "NewCore/Outline Contour"
             Name "OUTLINE"
             Cull Front
             ZWrite On
-            // Чуть отодвинуть обводку назад, чтобы не было артефактов на гранях
-            Offset 1, 1
+            Offset 2, 2
 
             CGPROGRAM
             #pragma vertex vert
@@ -43,14 +42,16 @@ Shader "NewCore/Outline Contour"
             v2f vert (appdata v)
             {
                 v2f o;
-                // Позиция в clip space
-                float4 clipPos = UnityObjectToClipPos(v.vertex);
-                // Нормаль в view space — направление обводки от камеры
-                float3 viewNormal = normalize(mul((float3x3)UNITY_MATRIX_IT_MV, v.normal));
-                // Толщина обводки в пикселях: ровная линия на экране
-                float pixelScale = _OutlineWidth * clipPos.w * (1.0 / _ScreenParams.y);
-                clipPos.xy += viewNormal.xy * pixelScale;
-                o.pos = clipPos;
+                float4 worldPos = mul(unity_ObjectToWorld, v.vertex);
+                float3 worldNorm = normalize(mul((float3x3)unity_ObjectToWorld, v.normal));
+                float3 viewDir = normalize(worldPos.xyz - _WorldSpaceCameraPos);
+                // По силуэту: не расширяем «перед» объекта — нет повторения в первом лице
+                float towardCamera = dot(viewDir, worldNorm);
+                float silhouette = 1.0 - saturate(towardCamera);
+                float dist = length(worldPos.xyz - _WorldSpaceCameraPos);
+                float distScale = lerp(0.4, 1.0, saturate((dist - 0.5) / 2.5));
+                worldPos.xyz += worldNorm * (_OutlineWidth * max(0.15, silhouette) * distScale);
+                o.pos = mul(UNITY_MATRIX_VP, worldPos);
                 return o;
             }
 

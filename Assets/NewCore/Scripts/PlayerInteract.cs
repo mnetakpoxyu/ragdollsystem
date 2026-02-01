@@ -96,11 +96,11 @@ public class PlayerInteract : MonoBehaviour
         outline.effectColor = new Color(0f, 0f, 0f, 1f);
         outline.effectDistance = new Vector2(2f, -2f);
         var rect = textObj.GetComponent<RectTransform>();
-        rect.anchorMin = new Vector2(0.5f, 0.92f);
-        rect.anchorMax = new Vector2(0.5f, 0.92f);
-        rect.pivot = new Vector2(0.5f, 0.5f);
+        rect.anchorMin = new Vector2(0.5f, 1f);
+        rect.anchorMax = new Vector2(0.5f, 1f);
+        rect.pivot = new Vector2(0.5f, 1f);
         rect.sizeDelta = new Vector2(900, 56);
-        rect.anchoredPosition = Vector2.zero;
+        rect.anchoredPosition = new Vector2(0f, -50f);
     }
 
     void OnDestroy()
