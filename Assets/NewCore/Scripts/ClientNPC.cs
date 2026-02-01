@@ -29,6 +29,14 @@ public class ClientNPC : MonoBehaviour
     [Tooltip("Ровно 2 двери (или любое количество): NPC пойдёт только когда ВСЕ эти двери открыты. Перетащи сюда 2 объекта с InteractableDoor. Пусто — идёт сразу.")]
     [SerializeField] InteractableDoor[] doors;
 
+    [Header("Оплата за игру (при взаимодействии E у стойки)")]
+    [Tooltip("Цена за 1 игровой час. Клиент «скажет» случайное кол-во часов и заплатит.")]
+    [SerializeField] float pricePerHour = 100f;
+    [Tooltip("Мин. часов, которые клиент хочет поиграть (случайное от Min до Max).")]
+    [SerializeField] float minSessionHours = 1f;
+    [Tooltip("Макс. часов, которые клиент хочет поиграть.")]
+    [SerializeField] float maxSessionHours = 3f;
+
     [Header("Движение")]
     [Tooltip("Скорость ходьбы.")]
     [SerializeField] float moveSpeed = 2.5f;
@@ -37,11 +45,38 @@ public class ClientNPC : MonoBehaviour
     [Tooltip("Минимальное смещение за интервал, чтобы не считать застрявшим (м).")]
     [SerializeField] float stuckMinMove = 0.15f;
 
+    [Header("Голосовые реплики")]
+    [Tooltip("Минимальный интервал между репликами (реальные секунды).")]
+    [SerializeField] float minPhraseInterval = 30f;
+    [Tooltip("Максимальный интервал между репликами (реальные секунды).")]
+    [SerializeField] float maxPhraseInterval = 120f;
+    [Tooltip("Минимальное количество раз воспроизведения реплики за сессию.")]
+    [SerializeField] int minPhraseCount = 3;
+    [Tooltip("Максимальное количество раз воспроизведения реплики за сессию.")]
+    [SerializeField] int maxPhraseCount = 5;
+    [Tooltip("Расстояние слышимости голоса (в корпусах персонажа, ~1м каждый).")]
+    [SerializeField] float voiceMaxDistance = 12f;
+    [Tooltip("Последние N минут игровой сессии — крайний момент для старта реплики. Реплика не запустится позже.")]
+    [SerializeField] float lastPhraseBufferMinutes = 10f;
+
     NavMeshAgent _agent;
     State _state = State.WaitingAtDoor;
     float _lastStuckCheckTime;
     Vector3 _lastPositionForStuck;
     Transform _seatChair;
+    float _requestedSessionHours;
+    float _paymentAmount;
+    bool _hasOrdered;
+
+    // Голосовые реплики (привязаны к игровому времени сессии)
+    AudioClip _recordedPhrase;
+    AudioSource _audioSource;
+    GameTime _gameTime;
+    float _sessionStartHours;
+    float _sessionDurationHours;
+    float _nextPhraseElapsedHours; // момент воспроизведения: elapsed часов от начала сессии
+    int _phrasesLeftToPlay;
+    bool _isPlayingPhrase;
 
     void Awake()
     {
@@ -52,6 +87,15 @@ public class ClientNPC : MonoBehaviour
             _agent.speed = moveSpeed;
             _agent.autoRepath = true;
         }
+
+        // Создаём AudioSource для воспроизведения реплик
+        _audioSource = gameObject.AddComponent<AudioSource>();
+        _audioSource.spatialBlend = 1f; // 3D звук
+        _audioSource.minDistance = 1f;
+        _audioSource.maxDistance = voiceMaxDistance; // 12 корпусов персонажа
+        _audioSource.rolloffMode = AudioRolloffMode.Linear; // Плавное затухание
+        _audioSource.playOnAwake = false;
+        _audioSource.loop = false; // Без зацикливания
     }
 
     void Start()
@@ -110,6 +154,17 @@ public class ClientNPC : MonoBehaviour
                 }
                 break;
             case State.SittingAtSeat:
+                // Воспроизводим реплики во время игровой сессии (по игровому времени)
+                bool isCurrentlyPlaying = _isPlayingPhrase || (_audioSource != null && _audioSource.isPlaying);
+                if (_recordedPhrase != null && _phrasesLeftToPlay > 0 && !isCurrentlyPlaying && _gameTime != null)
+                {
+                    float elapsedHours = GetSessionElapsedHours();
+                    // Играем, если пора, и не позже дедлайна
+                    if (elapsedHours >= _nextPhraseElapsedHours)
+                    {
+                        PlayPhrase();
+                    }
+                }
                 break;
         }
     }
@@ -174,11 +229,29 @@ public class ClientNPC : MonoBehaviour
     }
 
     /// <summary>
-    /// Вызывается игроком по E у стойки — клиент хочет поиграть, появляется задача посадить его за стол.
+    /// Инициализация при спавне: точка стойки и двери. Вызывается ClientNPCSpawner.
+    /// </summary>
+    public void InitializeSpawn(Transform counter, InteractableDoor[] doorList)
+    {
+        counterTarget = counter;
+        doors = doorList != null ? doorList : new InteractableDoor[0];
+    }
+
+    /// <summary>
+    /// Вызывается игроком по E у стойки. Клиент «говорит», сколько часов хочет поиграть и платит сразу.
+    /// После этого игрок должен посадить его за стол.
     /// </summary>
     public void OnInteract()
     {
-        if (_state != State.WaitingAtCounter) return;
+        if (_state != State.WaitingAtCounter || _hasOrdered) return;
+
+        _requestedSessionHours = Mathf.Clamp(Random.Range(minSessionHours, maxSessionHours), 0.25f, 24f);
+        _paymentAmount = _requestedSessionHours * pricePerHour;
+
+        if (PlayerBalance.Instance != null)
+            PlayerBalance.Instance.Add(_paymentAmount);
+
+        _hasOrdered = true;
     }
 
     /// <summary>
@@ -200,4 +273,119 @@ public class ClientNPC : MonoBehaviour
 
     public State CurrentState => _state;
     public Transform Target => counterTarget;
+
+    /// <summary> Сколько часов клиент хочет поиграть (задаётся при взаимодействии E). </summary>
+    public float RequestedSessionHours => _requestedSessionHours;
+
+    /// <summary> Сумма, которую клиент заплатил (зачислена при E). </summary>
+    public float PaymentAmount => _paymentAmount;
+
+    /// <summary> Клиент уже «заказал» сессию и ждёт посадки. </summary>
+    public bool HasOrdered => _hasOrdered;
+
+    /// <summary>
+    /// Установить записанную голосовую реплику для этого клиента.
+    /// </summary>
+    public void SetRecordedPhrase(AudioClip clip)
+    {
+        if (clip == null)
+        {
+            Debug.LogWarning("ClientNPC: Попытка установить пустой AudioClip!");
+            return;
+        }
+
+        _recordedPhrase = clip;
+
+        // Минимум 1 воспроизведение, максимум — без спама
+        _phrasesLeftToPlay = UnityEngine.Random.Range(minPhraseCount, maxPhraseCount + 1);
+
+        Debug.Log($"ClientNPC: Реплика записана. Будет воспроизведена {_phrasesLeftToPlay} раз(а).");
+    }
+
+    /// <summary>
+    /// Задать параметры сессии (вызывается ComputerSpot при посадке).
+    /// Планирует реплики в игровом времени — гарантированно успеют за сессию.
+    /// </summary>
+    public void SetSessionInfo(GameTime gameTime, float sessionStartHours, float sessionDurationHours)
+    {
+        _gameTime = gameTime;
+        _sessionStartHours = sessionStartHours;
+        _sessionDurationHours = sessionDurationHours;
+
+        if (_recordedPhrase == null || _phrasesLeftToPlay <= 0 || _gameTime == null) return;
+
+        // Дедлайн: последние N минут сессии — реплика уже не должна стартовать
+        float deadlineHours = sessionDurationHours - (lastPhraseBufferMinutes / 60f);
+        deadlineHours = Mathf.Max(0.02f, deadlineHours);
+
+        // Первая реплика — в первой трети окна (ранний старт, 100% успеет)
+        float firstPhraseMax = deadlineHours * 0.33f;
+        _nextPhraseElapsedHours = UnityEngine.Random.Range(0.005f, firstPhraseMax);
+
+        Debug.Log($"ClientNPC: Сессия {sessionDurationHours:F2}ч. Дедлайн реплик: {deadlineHours:F2}ч. Первая реплика в {_nextPhraseElapsedHours:F2}ч.");
+    }
+
+    float GetSessionElapsedHours()
+    {
+        if (_gameTime == null) return 0f;
+        float elapsed = _gameTime.CurrentTimeHours - _sessionStartHours;
+        if (elapsed < 0f) elapsed += 24f;
+        return elapsed;
+    }
+
+    /// <summary>
+    /// Воспроизвести записанную реплику.
+    /// </summary>
+    void PlayPhrase()
+    {
+        if (_recordedPhrase == null || _audioSource == null) return;
+        if (_isPlayingPhrase || _audioSource.isPlaying) return;
+
+        _audioSource.clip = _recordedPhrase;
+        _audioSource.Play();
+        _isPlayingPhrase = true;
+        _phrasesLeftToPlay--;
+
+        float clipLength = _recordedPhrase.length;
+        Debug.Log($"ClientNPC: Воспроизведение реплики. Осталось: {_phrasesLeftToPlay}");
+
+        // Планируем следующую реплику в игровом времени (не позже дедлайна)
+        if (_phrasesLeftToPlay > 0 && _gameTime != null)
+        {
+            float elapsed = GetSessionElapsedHours();
+            float phraseLengthGameHours = clipLength * _gameTime.HoursPerRealSecond;
+            float intervalHours = UnityEngine.Random.Range(minPhraseInterval, maxPhraseInterval) * _gameTime.HoursPerRealSecond;
+
+            // Дедлайн: последние N минут — реплика не должна стартовать
+            float deadlineHours = _sessionDurationHours - (lastPhraseBufferMinutes / 60f);
+            deadlineHours = Mathf.Max(0.05f, deadlineHours);
+
+            // Следующая реплика: после окончания текущей + интервал
+            float nextElapsed = elapsed + phraseLengthGameHours + intervalHours;
+
+            // Не планируем позже дедлайна — реплика должна успеть до конца
+            float maxStartElapsed = deadlineHours - phraseLengthGameHours;
+            if (nextElapsed > maxStartElapsed)
+            {
+                // Укладываем в оставшееся окно (равномерно или сразу после текущей)
+                nextElapsed = Mathf.Min(elapsed + phraseLengthGameHours + minPhraseInterval * _gameTime.HoursPerRealSecond, maxStartElapsed);
+            }
+
+            _nextPhraseElapsedHours = nextElapsed;
+        }
+
+        StartCoroutine(ResetPlayingFlag(clipLength + 0.1f));
+    }
+
+    /// <summary>
+    /// Сбросить флаг воспроизведения после окончания аудио.
+    /// </summary>
+    System.Collections.IEnumerator ResetPlayingFlag(float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        _isPlayingPhrase = false;
+    }
+
+    /// <summary> Есть ли записанная реплика у этого клиента. </summary>
+    public bool HasRecordedPhrase => _recordedPhrase != null;
 }

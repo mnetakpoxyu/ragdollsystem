@@ -29,18 +29,23 @@ public class PlayerInteract : MonoBehaviour
     [Tooltip("Текст активной задачи (например «Клиент хочет поиграть…»). Если не задан — создаётся автоматически.")]
     [SerializeField] Text taskText;
 
+    [Header("Запись голоса")]
+    [Tooltip("UI для записи голоса клиента (создаётся автоматически если не задан).")]
+    [SerializeField] VoiceRecordingUI voiceRecordingUI;
+
     Camera _cam;
     InputAction _interactAction;
     InteractableDoor _currentDoor;
     ClientNPC _currentClient;
     ComputerSpot _currentSpot;
+    BalanceDisplayTarget _currentBalanceTarget;
     ClientNPC _clientWaitingToSeat;
+    bool _isRecordingVoice;
 
     const string HintMessage = "Взаимодействовать  [E]";
     const string HintFree = "Свободен";
     const string HintOccupied = "Занят";
     const string HintSeatClient = "Посадить клиента  [E]";
-    const string TaskSeatClient = "Клиент хочет поиграть. Подойдите к свободному столу и нажмите E.";
 
     void Start()
     {
@@ -73,6 +78,13 @@ public class PlayerInteract : MonoBehaviour
             if (hintFont != null) taskText.font = hintFont;
             taskText.gameObject.SetActive(false);
         }
+
+        // Создаём VoiceRecordingUI если не задан
+        if (voiceRecordingUI == null)
+        {
+            var voiceUIObj = new GameObject("VoiceRecordingUI");
+            voiceRecordingUI = voiceUIObj.AddComponent<VoiceRecordingUI>();
+        }
     }
 
     void CreateDefaultTask()
@@ -83,7 +95,7 @@ public class PlayerInteract : MonoBehaviour
         var textObj = new GameObject("TaskText");
         textObj.transform.SetParent(canvas.transform, false);
         taskText = textObj.AddComponent<Text>();
-        taskText.text = TaskSeatClient;
+        taskText.text = "";
         taskText.font = hintFont != null ? hintFont : Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         taskText.fontSize = 32;
         taskText.fontStyle = FontStyle.Bold;
@@ -106,6 +118,11 @@ public class PlayerInteract : MonoBehaviour
     void OnDestroy()
     {
         _interactAction?.Disable();
+        if (_currentBalanceTarget != null)
+        {
+            _currentBalanceTarget.SetAimedAt(false);
+            _currentBalanceTarget = null;
+        }
     }
 
     void CreateDefaultHint()
@@ -147,15 +164,21 @@ public class PlayerInteract : MonoBehaviour
 
     void Update()
     {
+        // Если идёт запись голоса, не обрабатываем взаимодействия
+        if (_isRecordingVoice || (voiceRecordingUI != null && voiceRecordingUI.IsUIActive))
+            return;
+
         InteractableDoor hitDoor = null;
         ClientNPC hitClient = null;
         ComputerSpot hitSpot = null;
+        BalanceDisplayTarget hitBalanceTarget = null;
         Ray ray = _cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
         if (Physics.Raycast(ray, out RaycastHit hit, maxDistance, interactLayers))
         {
             hitDoor = hit.collider.GetComponentInParent<InteractableDoor>();
             hitClient = hit.collider.GetComponentInParent<ClientNPC>();
             hitSpot = hit.collider.GetComponentInParent<ComputerSpot>();
+            hitBalanceTarget = hit.collider.GetComponentInParent<BalanceDisplayTarget>();
         }
 
         if (hitDoor != _currentDoor)
@@ -179,6 +202,15 @@ public class PlayerInteract : MonoBehaviour
                 _currentSpot.SetHighlight(true);
         }
 
+        if (hitBalanceTarget != _currentBalanceTarget)
+        {
+            if (_currentBalanceTarget != null)
+                _currentBalanceTarget.SetAimedAt(false);
+            _currentBalanceTarget = hitBalanceTarget;
+            if (_currentBalanceTarget != null)
+                _currentBalanceTarget.SetAimedAt(true);
+        }
+
         bool showHint = _currentDoor != null || _currentClient != null || _currentSpot != null;
         if (hintText != null)
         {
@@ -198,9 +230,15 @@ public class PlayerInteract : MonoBehaviour
         }
 
         if (taskText != null)
+        {
             taskText.gameObject.SetActive(_clientWaitingToSeat != null);
-        if (taskText != null && _clientWaitingToSeat != null)
-            taskText.text = TaskSeatClient;
+            if (_clientWaitingToSeat != null && _clientWaitingToSeat.HasOrdered)
+            {
+                float h = _clientWaitingToSeat.RequestedSessionHours;
+                float pay = _clientWaitingToSeat.PaymentAmount;
+                taskText.text = string.Format("Клиент: {0:F1} ч., {1:F0} ₽. Посадите за стол [E].", h, pay);
+            }
+        }
 
         if (_interactAction != null && _interactAction.triggered)
         {
@@ -208,8 +246,12 @@ public class PlayerInteract : MonoBehaviour
                 _currentDoor.Open();
             else if (_currentClient != null && _currentClient.CurrentState == ClientNPC.State.WaitingAtCounter)
             {
+                // Взаимодействие с клиентом: оплата и запись голоса
                 _currentClient.OnInteract();
                 _clientWaitingToSeat = _currentClient;
+
+                // Открываем UI для записи голоса
+                StartVoiceRecording(_currentClient);
             }
             else if (_currentSpot != null && !_currentSpot.IsOccupied && _clientWaitingToSeat != null)
             {
@@ -217,5 +259,58 @@ public class PlayerInteract : MonoBehaviour
                     _clientWaitingToSeat = null;
             }
         }
+    }
+
+    /// <summary>
+    /// Начать запись голоса для клиента.
+    /// </summary>
+    void StartVoiceRecording(ClientNPC client)
+    {
+        if (voiceRecordingUI == null || client == null) return;
+
+        _isRecordingVoice = true;
+
+        // Блокируем управление игроком
+        if (PlayerInputManager.Instance != null)
+            PlayerInputManager.Instance.LockInput();
+
+        // Показываем UI записи
+        voiceRecordingUI.ShowUI(
+            onComplete: (AudioClip clip) => OnVoiceRecordingComplete(client, clip),
+            onCancel: OnVoiceRecordingCancelled
+        );
+    }
+
+    /// <summary>
+    /// Callback при завершении записи голоса.
+    /// </summary>
+    void OnVoiceRecordingComplete(ClientNPC client, AudioClip clip)
+    {
+        _isRecordingVoice = false;
+
+        // Разблокируем управление игроком
+        if (PlayerInputManager.Instance != null)
+            PlayerInputManager.Instance.UnlockInput();
+
+        // Сохраняем записанную реплику в клиента
+        if (client != null && clip != null)
+        {
+            client.SetRecordedPhrase(clip);
+            Debug.Log("PlayerInteract: Голосовая реплика записана для клиента.");
+        }
+    }
+
+    /// <summary>
+    /// Callback при отмене записи голоса.
+    /// </summary>
+    void OnVoiceRecordingCancelled()
+    {
+        _isRecordingVoice = false;
+
+        // Разблокируем управление игроком
+        if (PlayerInputManager.Instance != null)
+            PlayerInputManager.Instance.UnlockInput();
+
+        Debug.Log("PlayerInteract: Запись голоса отменена.");
     }
 }

@@ -32,8 +32,8 @@ public class GameTime : MonoBehaviour
     [Header("Запуск по дверям")]
     [Tooltip("Время не идёт, пока не открыты ВСЕ эти двери. Перетащи сюда 2 двери (для двойных — оба створки). Пусто — время идёт сразу.")]
     [SerializeField] InteractableDoor[] doorsToOpen;
-    [Tooltip("Скорость: сколько игровых часов за 1 реальную секунду. 0.0167 ≈ 1 игровая минута за 1 реальную секунду.")]
-    [SerializeField] float hoursPerRealSecond = 0.0167f;
+    [Tooltip("Скорость: сколько игровых часов за 1 реальную секунду. 0.01 ≈ 36 игр. сек за 1 реальн. сек (1 игр. мин ≈ 1.7 реальн. сек).")]
+    [SerializeField] float hoursPerRealSecond = 0.01f;
 
     [Header("Режим отображения")]
     [Tooltip("Screen Space — время в углу экрана. World Space — время на этом объекте в мире (часы на стене).")]
@@ -337,6 +337,9 @@ public class GameTime : MonoBehaviour
 
     /// <summary> Текущее время в часах (0–24). </summary>
     public float CurrentTimeHours => _currentTimeHours;
+
+    /// <summary> Сколько игровых часов проходит за 1 реальную секунду. </summary>
+    public float HoursPerRealSecond => hoursPerRealSecond;
 
     /// <summary> Установить время в часах (0–24). </summary>
     public void SetTimeHours(float hours)
