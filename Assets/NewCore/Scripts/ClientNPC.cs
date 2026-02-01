@@ -2,8 +2,9 @@ using UnityEngine;
 using UnityEngine.AI;
 
 /// <summary>
-/// Клиент: стоит у двери, ждёт открытия → идёт к стойке админа (в обход стен) → ждёт взаимодействия.
-/// Нужен NavMeshAgent + запечённый NavMesh, чтобы не проходил сквозь стены.
+/// Умный NPC: ждёт, пока откроются нужные двери (например 2), затем идёт к точке (пустой объект)
+/// в обход препятствий по NavMesh. Не идёт, пока не открыты ВСЕ двери из списка.
+/// Нужен NavMeshAgent + запечённый NavMesh (Window → AI → Navigation → Bake).
 /// </summary>
 [RequireComponent(typeof(Collider))]
 [RequireComponent(typeof(NavMeshAgent))]
@@ -13,21 +14,34 @@ public class ClientNPC : MonoBehaviour
     {
         WaitingAtDoor,
         WalkingToCounter,
-        WaitingAtCounter
+        WaitingAtCounter,
+        WalkingToSeat,
+        SittingAtSeat
     }
 
-    [Header("Логика")]
-    [Tooltip("Двери: клиент пойдёт к стойке только когда ВСЕ эти двери открыты. Пусто — идёт сразу.")]
-    [SerializeField] InteractableDoor[] doors;
-    [Tooltip("Точка у стойки админа (пустой объект) — сюда клиент приходит и ждёт.")]
+    [Header("Точка назначения")]
+    [Tooltip("Пустой объект (Empty GameObject) — сюда NPC идёт, обходя стены и препятствия.")]
     [SerializeField] Transform counterTarget;
-    [Tooltip("Дистанция до стойки, при которой считаем «пришёл».")]
+    [Tooltip("Дистанция до точки, при которой считаем «пришёл».")]
     [SerializeField] float arriveDistance = 0.6f;
-    [Tooltip("Скорость ходьбы (используется NavMeshAgent.speed).")]
+
+    [Header("Условие: двери")]
+    [Tooltip("Ровно 2 двери (или любое количество): NPC пойдёт только когда ВСЕ эти двери открыты. Перетащи сюда 2 объекта с InteractableDoor. Пусто — идёт сразу.")]
+    [SerializeField] InteractableDoor[] doors;
+
+    [Header("Движение")]
+    [Tooltip("Скорость ходьбы.")]
     [SerializeField] float moveSpeed = 2.5f;
+    [Tooltip("Проверять застревание и пересчитывать путь (сек без движения = застрял). 0 = отключено.")]
+    [SerializeField] float stuckCheckInterval = 2f;
+    [Tooltip("Минимальное смещение за интервал, чтобы не считать застрявшим (м).")]
+    [SerializeField] float stuckMinMove = 0.15f;
 
     NavMeshAgent _agent;
     State _state = State.WaitingAtDoor;
+    float _lastStuckCheckTime;
+    Vector3 _lastPositionForStuck;
+    Transform _seatChair;
 
     void Awake()
     {
@@ -36,6 +50,7 @@ public class ClientNPC : MonoBehaviour
         {
             _agent.updateRotation = true;
             _agent.speed = moveSpeed;
+            _agent.autoRepath = true;
         }
     }
 
@@ -43,8 +58,10 @@ public class ClientNPC : MonoBehaviour
     {
         EnsureOnNavMesh();
         if (counterTarget == null) return;
-        if (doors == null || doors.Length == 0)
-            GoToCounter();
+        if (AreAllDoorsOpen())
+            GoToTarget();
+        _lastPositionForStuck = transform.position;
+        _lastStuckCheckTime = Time.time;
     }
 
     void EnsureOnNavMesh()
@@ -62,7 +79,7 @@ public class ClientNPC : MonoBehaviour
                 if (AreAllDoorsOpen())
                 {
                     EnsureOnNavMesh();
-                    GoToCounter();
+                    GoToTarget();
                 }
                 break;
             case State.WalkingToCounter:
@@ -70,10 +87,54 @@ public class ClientNPC : MonoBehaviour
                 {
                     if (!_agent.pathPending && _agent.remainingDistance <= arriveDistance)
                         _state = State.WaitingAtCounter;
+                    else if (stuckCheckInterval > 0f && Time.time - _lastStuckCheckTime >= stuckCheckInterval)
+                        TryUnstuck();
                 }
                 break;
             case State.WaitingAtCounter:
                 break;
+            case State.WalkingToSeat:
+                if (_agent != null && _agent.isOnNavMesh)
+                {
+                    if (!_agent.pathPending && _agent.remainingDistance <= arriveDistance)
+                    {
+                        _state = State.SittingAtSeat;
+                        if (_seatChair != null)
+                        {
+                            transform.SetPositionAndRotation(_seatChair.position, _seatChair.rotation);
+                            _agent.enabled = false;
+                        }
+                    }
+                    else if (stuckCheckInterval > 0f && Time.time - _lastStuckCheckTime >= stuckCheckInterval)
+                        TryUnstuckToSeat();
+                }
+                break;
+            case State.SittingAtSeat:
+                break;
+        }
+    }
+
+    void TryUnstuck()
+    {
+        _lastStuckCheckTime = Time.time;
+        float moved = Vector3.Distance(transform.position, _lastPositionForStuck);
+        _lastPositionForStuck = transform.position;
+        if (moved < stuckMinMove && counterTarget != null && _agent != null && _agent.isOnNavMesh)
+        {
+            _agent.ResetPath();
+            _agent.SetDestination(counterTarget.position);
+        }
+    }
+
+    void TryUnstuckToSeat()
+    {
+        _lastStuckCheckTime = Time.time;
+        float moved = Vector3.Distance(transform.position, _lastPositionForStuck);
+        _lastPositionForStuck = transform.position;
+        if (moved < stuckMinMove && _seatChair != null && _agent != null && _agent.isOnNavMesh)
+        {
+            _agent.ResetPath();
+            _agent.SetDestination(_seatChair.position);
         }
     }
 
@@ -88,7 +149,7 @@ public class ClientNPC : MonoBehaviour
         return true;
     }
 
-    void GoToCounter()
+    void GoToTarget()
     {
         if (counterTarget == null) return;
         if (_agent == null) return;
@@ -97,17 +158,46 @@ public class ClientNPC : MonoBehaviour
         {
             _agent.SetDestination(counterTarget.position);
             _state = State.WalkingToCounter;
+            _lastPositionForStuck = transform.position;
+            _lastStuckCheckTime = Time.time;
         }
     }
 
     /// <summary>
-    /// Вызывается игроком по E у стойки. Дальше — вести к компу, брать деньги и т.д.
+    /// Задать точку назначения из кода (например другой пустой объект).
+    /// </summary>
+    public void SetTarget(Transform target)
+    {
+        counterTarget = target;
+        if (_state == State.WalkingToCounter && _agent != null && _agent.isOnNavMesh && target != null)
+            _agent.SetDestination(target.position);
+    }
+
+    /// <summary>
+    /// Вызывается игроком по E у стойки — клиент хочет поиграть, появляется задача посадить его за стол.
     /// </summary>
     public void OnInteract()
     {
         if (_state != State.WaitingAtCounter) return;
-        // TODO: вести к компу, диалог, оплата и т.д.
+    }
+
+    /// <summary>
+    /// Отправить NPC к стулу и посадить. Вызывается из ComputerSpot.SeatClient.
+    /// </summary>
+    public void GoSitAt(Transform chair)
+    {
+        if (chair == null || _agent == null) return;
+        _seatChair = chair;
+        EnsureOnNavMesh();
+        if (_agent.isOnNavMesh)
+        {
+            _agent.SetDestination(chair.position);
+            _state = State.WalkingToSeat;
+            _lastPositionForStuck = transform.position;
+            _lastStuckCheckTime = Time.time;
+        }
     }
 
     public State CurrentState => _state;
+    public Transform Target => counterTarget;
 }

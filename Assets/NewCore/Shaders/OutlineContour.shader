@@ -2,8 +2,10 @@ Shader "NewCore/Outline Contour"
 {
     Properties
     {
-        _OutlineWidth ("Outline Width", Range(0.01, 0.4)) = 0.24
-        _RGBSpeed ("RGB Cycle Speed", Range(0.1, 2)) = 0.35
+        [Header(Outline)]
+        _OutlineWidth ("Outline Width (pixels)", Range(0.5, 8)) = 2.5
+        _OutlineColor ("Outline Color", Color) = (0.2, 0.9, 0.4, 1)
+        _RGBSpeed ("RGB Cycle (0 = solid)", Range(0, 2)) = 0
     }
     SubShader
     {
@@ -15,6 +17,8 @@ Shader "NewCore/Outline Contour"
             Name "OUTLINE"
             Cull Front
             ZWrite On
+            // Чуть отодвинуть обводку назад, чтобы не было артефактов на гранях
+            Offset 1, 1
 
             CGPROGRAM
             #pragma vertex vert
@@ -22,6 +26,7 @@ Shader "NewCore/Outline Contour"
             #include "UnityCG.cginc"
 
             float _OutlineWidth;
+            float4 _OutlineColor;
             float _RGBSpeed;
 
             struct appdata
@@ -38,13 +43,17 @@ Shader "NewCore/Outline Contour"
             v2f vert (appdata v)
             {
                 v2f o;
-                float3 norm = normalize(v.normal);
-                float3 outlineVertex = v.vertex.xyz + norm * _OutlineWidth;
-                o.pos = UnityObjectToClipPos(float4(outlineVertex, 1));
+                // Позиция в clip space
+                float4 clipPos = UnityObjectToClipPos(v.vertex);
+                // Нормаль в view space — направление обводки от камеры
+                float3 viewNormal = normalize(mul((float3x3)UNITY_MATRIX_IT_MV, v.normal));
+                // Толщина обводки в пикселях: ровная линия на экране
+                float pixelScale = _OutlineWidth * clipPos.w * (1.0 / _ScreenParams.y);
+                clipPos.xy += viewNormal.xy * pixelScale;
+                o.pos = clipPos;
                 return o;
             }
 
-            // Hue [0..1] -> RGB
             fixed3 hueToRgb(float h)
             {
                 fixed r = abs(h * 6 - 3) - 1;
@@ -55,9 +64,12 @@ Shader "NewCore/Outline Contour"
 
             fixed4 frag (v2f i) : SV_Target
             {
-                float hue = frac(_Time.y * _RGBSpeed);
-                fixed3 rgb = hueToRgb(hue);
-                return fixed4(rgb, 1);
+                if (_RGBSpeed > 0)
+                {
+                    float hue = frac(_Time.y * _RGBSpeed);
+                    return fixed4(hueToRgb(hue), 1);
+                }
+                return _OutlineColor;
             }
             ENDCG
         }
