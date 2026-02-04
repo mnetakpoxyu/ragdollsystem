@@ -22,7 +22,9 @@ public class BalanceDisplayTarget : MonoBehaviour
     [Tooltip("Иконка баланса (опционально). Если задана — отображается слева от текста.")]
     [SerializeField] Sprite balanceIcon;
     [Tooltip("Размер мирового канваса (ширина панели в метрах).")]
+#pragma warning disable 0414
     [SerializeField] float panelWorldWidth = 0.8f;
+#pragma warning restore 0414
     [Tooltip("Шрифт подсказки. Пусто — встроенный Unity.")]
     [SerializeField] Font customFont;
 

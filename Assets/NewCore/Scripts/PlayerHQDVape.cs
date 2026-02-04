@@ -1,0 +1,443 @@
+using System.Collections;
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+/// <summary>
+/// Затяжка электронной сигареты (HQD): удержание кнопки V — появление перед лицом, отпускание — плавное исчезновение и пар.
+/// Максимум затяжки — 5 секунд, количество пара зависит от времени удержания.
+/// Вешать на объект с камерой (например Main Camera). HQD будет дочерним к камере.
+/// </summary>
+[AddComponentMenu("NewCore/Player HQD Vape")]
+public class PlayerHQDVape : MonoBehaviour
+{
+    [Header("Ссылки")]
+    [Tooltip("Камера игрока (обычно это сам объект, на котором висит скрипт).")]
+    [SerializeField] Transform playerCamera;
+    [Tooltip("Префаб HQD (модель электронной сигареты). Если не задан — ищем дочерний объект с именем содержащим 'HQD' или 'hqd'.")]
+    [SerializeField] GameObject hqdPrefab;
+    [Tooltip("Input Action Asset с картой Player и действием Vape (по умолчанию клавиша V).")]
+    [SerializeField] InputActionAsset inputActionAsset;
+    [Tooltip("Партикл пара при выдохе. Если не задан — создаётся простой пар при старте.")]
+    [SerializeField] ParticleSystem vaporParticle;
+    [Tooltip("Родитель пара в мире (например тело игрока). Если задан — пар появляется в мире и его видят все. Если пусто — пар под камерой (только у тебя).")]
+    [SerializeField] Transform vaporWorldParent;
+
+    [Header("Видимость HQD")]
+    [Tooltip("Слой, на который вешается HQD — только твоя камера должна его рендерить. Создай слой типа FirstPersonOnly, добавь его в Culling Mask своей камеры; камеры других игроков его не рендерят — HQD видят только ты.")]
+    [SerializeField] int localOnlyLayer = 0;
+
+    [Header("Лимит затяжки")]
+    [Tooltip("Максимальное время затяжки в секундах. После этого затяжка автоматически прекращается.")]
+    [SerializeField] float maxHoldTime = 5f;
+
+    [Header("Позиции HQD (локальные относительно камеры)")]
+    [Tooltip("Позиция/поворот/масштаб HQD перед лицом (rotation — твой подобранный угол для «во рту»).")]
+    [SerializeField] Vector3 visibleLocalPosition = new Vector3(0.2f, -0.12f, 0.4f);
+    [Tooltip("Rotation HQD перед камерой (например 285, 161, 165).")]
+    [SerializeField] Vector3 visibleLocalEuler = new Vector3(285f, 161.37f, 164.97f);
+    [SerializeField] float visibleScale = 1f;
+    [Tooltip("Позиция «в кармане» — уезжает вправо-вниз, чтобы не проходить сквозь модель персонажа.")]
+    [SerializeField] Vector3 hiddenLocalPosition = new Vector3(0.65f, -0.5f, -0.22f);
+    [SerializeField] Vector3 hiddenLocalEuler = new Vector3(88f, 28f, -42f);
+    [SerializeField] float hiddenScale = 0.85f;
+
+    [Header("Анимация")]
+    [Tooltip("Длительность появления HQD (сек).")]
+    [SerializeField] float showDuration = 0.25f;
+    [Tooltip("Длительность исчезновения HQD (сек).")]
+    [SerializeField] float hideDuration = 0.35f;
+    [Tooltip("Кривая для плавности появления (опционально).")]
+    [SerializeField] AnimationCurve showCurve = AnimationCurve.EaseInOut(0f, 0f, 1f, 1f);
+    [Tooltip("Кривая для плавности исчезновения (опционально).")]
+    [SerializeField] AnimationCurve hideCurve = AnimationCurve.EaseInOut(0f, 0f, 1f, 1f);
+
+    [Header("Пар (видят все)")]
+    [Tooltip("Цвет пара. Меняй в инспекторе — пар будет этого цвета.")]
+    [SerializeField] Color vaporColor = new Color(0.95f, 0.95f, 0.98f, 0.55f);
+    [Tooltip("Минимальное количество частиц пара при короткой затяжке.")]
+    [SerializeField] int vaporMinParticles = 200;
+    [Tooltip("Максимальное количество частиц при затяжке на maxHoldTime (очень много пара).")]
+    [SerializeField] int vaporMaxParticles = 1200;
+    [Tooltip("Длительность испускания пара (сек).")]
+    [SerializeField] float vaporEmitDuration = 2.5f;
+    [Tooltip("Смещение точки появления пара относительно HQD (локально).")]
+    [SerializeField] Vector3 vaporLocalOffset = new Vector3(0f, 0f, 0.05f);
+    [Tooltip("Размер частиц при короткой затяжке — облако меньше.")]
+    [SerializeField] float vaporMinStartSize = 0.12f;
+    [Tooltip("Размер частиц при полной затяжке — облако больше.")]
+    [SerializeField] float vaporMaxStartSize = 0.38f;
+
+    [Header("Звуки")]
+    [Tooltip("Звук работающего испарителя. Циклится, пока удерживаешь V; плавно стартует и останавливается при отпускании.")]
+    [SerializeField] AudioClip evaporatorSound;
+    [Tooltip("Громкость звука затяжки (испарителя). 0–1; меньше значение — тише.")]
+    [Range(0f, 1f)] [SerializeField] float evaporatorVolume = 0.35f;
+    [Tooltip("Звук выдоха пара. Воспроизводится один раз в момент отпускания V.")]
+    [SerializeField] AudioClip exhaleSound;
+    [Tooltip("Время плавного появления звука испарителя (сек). 0 — без фейда.")]
+    [SerializeField] float evaporatorFadeInDuration = 0.15f;
+    [Tooltip("Время плавного затухания звука испарителя при отпускании (сек). 0 — без фейда.")]
+    [SerializeField] float evaporatorFadeOutDuration = 0.08f;
+
+    Transform _hqdRoot;
+    AudioSource _evaporatorSource;
+    AudioSource _exhaleSource;
+    InputAction _vapeAction;
+    bool _isHolding;
+    float _holdStartTime;
+    float _animTime;
+    float _animDuration;
+    bool _animShowing;   // true = показываем, false = прячем
+    bool _isAnimating;
+    ParticleSystem _vaporInstance;
+    bool _inputBlocked => PlayerInputManager.Instance != null && PlayerInputManager.Instance.IsInputLocked;
+
+    const string HqdChildName = "HQD";
+
+    void Start()
+    {
+        if (playerCamera == null)
+            playerCamera = transform;
+
+        EnsureHQD();
+        EnsureVaporParticle();
+        EnsureEvaporatorAudioSource();
+        SetupInput();
+    }
+
+    void EnsureEvaporatorAudioSource()
+    {
+        AudioSource[] sources = GetComponents<AudioSource>();
+        _evaporatorSource = sources.Length > 0 ? sources[0] : gameObject.AddComponent<AudioSource>();
+        _evaporatorSource.playOnAwake = false;
+        _evaporatorSource.loop = true;
+        _evaporatorSource.Stop();
+
+        if (sources.Length > 1)
+            _exhaleSource = sources[1];
+        else
+        {
+            _exhaleSource = gameObject.AddComponent<AudioSource>();
+            _exhaleSource.playOnAwake = false;
+            _exhaleSource.loop = false;
+        }
+    }
+
+    void EnsureHQD()
+    {
+        if (_hqdRoot != null) return;
+
+        if (hqdPrefab != null)
+        {
+            GameObject go = Instantiate(hqdPrefab, playerCamera);
+            go.name = HqdChildName;
+            _hqdRoot = go.transform;
+        }
+        else
+        {
+            foreach (Transform child in playerCamera)
+            {
+                if (child.name.IndexOf("HQD", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    child.name.IndexOf("hqd", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    _hqdRoot = child;
+                    break;
+                }
+            }
+        }
+
+        if (_hqdRoot == null)
+        {
+            Debug.LogWarning("PlayerHQDVape: HQD не найден. Назначьте префаб или добавьте дочерний объект с именем HQD.");
+            return;
+        }
+
+        _hqdRoot.localPosition = hiddenLocalPosition;
+        _hqdRoot.localRotation = Quaternion.Euler(hiddenLocalEuler);
+        _hqdRoot.localScale = Vector3.one * hiddenScale;
+        _hqdRoot.gameObject.SetActive(true);
+
+        if (localOnlyLayer >= 0 && localOnlyLayer <= 31)
+            SetLayerRecursive(_hqdRoot.gameObject, localOnlyLayer);
+    }
+
+    static void SetLayerRecursive(GameObject go, int layer)
+    {
+        go.layer = layer;
+        for (int i = 0; i < go.transform.childCount; i++)
+            SetLayerRecursive(go.transform.GetChild(i).gameObject, layer);
+    }
+
+    void EnsureVaporParticle()
+    {
+        Transform vaporParent = vaporWorldParent != null ? vaporWorldParent : playerCamera;
+        if (vaporParticle != null)
+        {
+            _vaporInstance = vaporParticle;
+            if (_vaporInstance.transform.parent != vaporParent)
+            {
+                var go = Instantiate(vaporParticle.gameObject, vaporParent);
+                _vaporInstance = go.GetComponent<ParticleSystem>();
+            }
+            _vaporInstance.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+            ApplyVaporColor(_vaporInstance, vaporColor);
+            return;
+        }
+
+        GameObject vaporGo = new GameObject("VaporParticles");
+        vaporGo.transform.SetParent(vaporParent);
+        vaporGo.transform.localPosition = Vector3.zero;
+        vaporGo.transform.localRotation = Quaternion.identity;
+        vaporGo.transform.localScale = Vector3.one;
+
+        _vaporInstance = vaporGo.AddComponent<ParticleSystem>();
+        var main = _vaporInstance.main;
+        main.duration = vaporEmitDuration;
+        main.loop = false;
+        main.startLifetime = 2.4f;
+        main.startSpeed = 0.7f;
+        main.startSize = vaporMaxStartSize;
+        main.startColor = vaporColor;
+        main.simulationSpace = ParticleSystemSimulationSpace.World;
+        main.maxParticles = 2500;
+        main.gravityModifier = -0.08f;
+
+        var emission = _vaporInstance.emission;
+        emission.enabled = false;
+
+        var shape = _vaporInstance.shape;
+        shape.enabled = true;
+        shape.shapeType = ParticleSystemShapeType.Sphere;
+        shape.radius = 0.18f;
+
+        var velocityOverLifetime = _vaporInstance.velocityOverLifetime;
+        velocityOverLifetime.enabled = true;
+        velocityOverLifetime.space = ParticleSystemSimulationSpace.World;
+        velocityOverLifetime.y = 0.5f;
+
+        var colorOverLifetime = _vaporInstance.colorOverLifetime;
+        colorOverLifetime.enabled = true;
+        Color c = vaporColor;
+        var grad = new Gradient();
+        grad.SetKeys(
+            new[] { new GradientColorKey(c, 0f), new GradientColorKey(c, 1f) },
+            new[] { new GradientAlphaKey(c.a * 0.95f, 0f), new GradientAlphaKey(c.a * 0.7f, 0.3f), new GradientAlphaKey(0f, 1f) }
+        );
+        colorOverLifetime.color = grad;
+
+        var sizeOverLifetime = _vaporInstance.sizeOverLifetime;
+        sizeOverLifetime.enabled = true;
+        sizeOverLifetime.size = new ParticleSystem.MinMaxCurve(1f, new AnimationCurve(
+            new Keyframe(0f, 0.5f), new Keyframe(0.2f, 1.35f), new Keyframe(0.5f, 1.1f), new Keyframe(1f, 0f)));
+
+        var renderer = vaporGo.GetComponent<ParticleSystemRenderer>();
+        if (renderer != null)
+        {
+            Shader shader = Shader.Find("Particles/Standard Unlit") ?? Shader.Find("Legacy Shaders/Particles/Alpha Blended Premultiply") ?? Shader.Find("Mobile/Particles/Alpha Blended");
+            if (shader != null)
+                renderer.material = new Material(shader) { color = vaporColor };
+        }
+    }
+
+    void ApplyVaporColor(ParticleSystem ps, Color color)
+    {
+        if (ps == null) return;
+        var main = ps.main;
+        main.startColor = color;
+    }
+
+    void SetupInput()
+    {
+        if (inputActionAsset == null) return;
+        var map = inputActionAsset.FindActionMap("Player");
+        _vapeAction = map?.FindAction("Vape");
+        if (_vapeAction != null)
+            _vapeAction.Enable();
+    }
+
+    void OnDestroy()
+    {
+        _vapeAction?.Disable();
+    }
+
+    void Update()
+    {
+        if (_hqdRoot == null) return;
+
+        ReadVapeInput();
+        if (_isHolding && (Time.time - _holdStartTime) >= maxHoldTime)
+            ReleaseVape();
+
+        UpdateAnimation();
+    }
+
+    void ReadVapeInput()
+    {
+        if (_vapeAction == null || _inputBlocked) return;
+
+        if (_vapeAction.WasPressedThisFrame())
+        {
+            if (!_isHolding && !_isAnimating)
+                StartVape();
+        }
+        else if (_vapeAction.WasReleasedThisFrame())
+        {
+            if (_isHolding)
+                ReleaseVape();
+        }
+    }
+
+    void StartVape()
+    {
+        _isHolding = true;
+        _holdStartTime = Time.time;
+        _animTime = 0f;
+        _animDuration = showDuration;
+        _animShowing = true;
+        _isAnimating = true;
+
+        if (evaporatorSound != null && _evaporatorSource != null)
+        {
+            _evaporatorSource.clip = evaporatorSound;
+            _evaporatorSource.loop = true;
+            if (evaporatorFadeInDuration <= 0f)
+            {
+                _evaporatorSource.volume = evaporatorVolume;
+                _evaporatorSource.Play();
+            }
+            else
+            {
+                _evaporatorSource.volume = 0f;
+                _evaporatorSource.Play();
+                StartCoroutine(FadeEvaporatorVolume(evaporatorVolume, evaporatorFadeInDuration));
+            }
+        }
+    }
+
+    void ReleaseVape()
+    {
+        if (!_isHolding && !_isAnimating) return;
+
+        float holdDuration = Mathf.Clamp(Time.time - _holdStartTime, 0f, maxHoldTime);
+        _isHolding = false;
+
+        if (evaporatorSound != null && _evaporatorSource != null && _evaporatorSource.isPlaying)
+        {
+            if (evaporatorFadeOutDuration <= 0f)
+                _evaporatorSource.Stop();
+            else
+                StartCoroutine(FadeOutAndStopEvaporator());
+        }
+
+        if (exhaleSound != null && _exhaleSource != null)
+            _exhaleSource.PlayOneShot(exhaleSound);
+
+        _animTime = 0f;
+        _animDuration = hideDuration;
+        _animShowing = false;
+        _isAnimating = true;
+
+        StartCoroutine(PlayVaporAfterHide(holdDuration));
+    }
+
+    IEnumerator FadeEvaporatorVolume(float targetVolume, float duration)
+    {
+        float start = _evaporatorSource != null ? _evaporatorSource.volume : 0f;
+        float t = 0f;
+        while (t < duration && _evaporatorSource != null)
+        {
+            t += Time.deltaTime;
+            _evaporatorSource.volume = Mathf.Lerp(start, targetVolume, t / duration);
+            yield return null;
+        }
+        if (_evaporatorSource != null)
+            _evaporatorSource.volume = targetVolume;
+    }
+
+    IEnumerator FadeOutAndStopEvaporator()
+    {
+        float startVolume = _evaporatorSource != null ? _evaporatorSource.volume : 1f;
+        float t = 0f;
+        while (t < evaporatorFadeOutDuration && _evaporatorSource != null)
+        {
+            t += Time.deltaTime;
+            _evaporatorSource.volume = Mathf.Lerp(startVolume, 0f, t / evaporatorFadeOutDuration);
+            yield return null;
+        }
+        if (_evaporatorSource != null)
+        {
+            _evaporatorSource.volume = 0f;
+            _evaporatorSource.Stop();
+        }
+    }
+
+    IEnumerator PlayVaporAfterHide(float holdDuration)
+    {
+        yield return new WaitForSeconds(hideDuration);
+        PlayVapor(holdDuration);
+    }
+
+    void UpdateAnimation()
+    {
+        if (!_isAnimating || _hqdRoot == null) return;
+
+        _animTime += Time.deltaTime;
+        float t = Mathf.Clamp01(_animTime / _animDuration);
+        float curveT = _animShowing ? showCurve.Evaluate(t) : hideCurve.Evaluate(t);
+
+        if (_animShowing)
+        {
+            _hqdRoot.localPosition = Vector3.Lerp(hiddenLocalPosition, visibleLocalPosition, curveT);
+            _hqdRoot.localRotation = Quaternion.Slerp(Quaternion.Euler(hiddenLocalEuler), Quaternion.Euler(visibleLocalEuler), curveT);
+            _hqdRoot.localScale = Vector3.one * Mathf.Lerp(hiddenScale, visibleScale, curveT);
+        }
+        else
+        {
+            _hqdRoot.localPosition = Vector3.Lerp(visibleLocalPosition, hiddenLocalPosition, curveT);
+            _hqdRoot.localRotation = Quaternion.Slerp(Quaternion.Euler(visibleLocalEuler), Quaternion.Euler(hiddenLocalEuler), curveT);
+            _hqdRoot.localScale = Vector3.one * Mathf.Lerp(visibleScale, hiddenScale, curveT);
+        }
+
+        if (t >= 1f)
+            _isAnimating = false;
+    }
+
+    void PlayVapor(float holdDuration)
+    {
+        if (_vaporInstance == null) return;
+
+        float normalizedHold = Mathf.Clamp01(holdDuration / maxHoldTime);
+        int count = Mathf.RoundToInt(Mathf.Lerp(vaporMinParticles, vaporMaxParticles, normalizedHold));
+        if (count <= 0) return;
+
+        Vector3 worldMouth = playerCamera.TransformPoint(visibleLocalPosition + vaporLocalOffset);
+        if (vaporWorldParent != null)
+        {
+            _vaporInstance.transform.SetParent(vaporWorldParent);
+            _vaporInstance.transform.position = worldMouth;
+            _vaporInstance.transform.rotation = Quaternion.identity;
+        }
+        else
+        {
+            _vaporInstance.transform.SetParent(playerCamera);
+            _vaporInstance.transform.localPosition = visibleLocalPosition + vaporLocalOffset;
+            _vaporInstance.transform.localRotation = Quaternion.identity;
+        }
+
+        ApplyVaporColor(_vaporInstance, vaporColor);
+
+        var main = _vaporInstance.main;
+        main.startSize = Mathf.Lerp(vaporMinStartSize, vaporMaxStartSize, normalizedHold);
+        main.duration = vaporEmitDuration;
+        main.loop = false;
+
+        var emission = _vaporInstance.emission;
+        emission.enabled = true;
+        emission.rateOverTime = 0f;
+        int burstCount = Mathf.Clamp(count, 0, 32767);
+        emission.SetBursts(new[] { new ParticleSystem.Burst(0f, (short)burstCount) });
+
+        _vaporInstance.Clear();
+        _vaporInstance.Play();
+    }
+}

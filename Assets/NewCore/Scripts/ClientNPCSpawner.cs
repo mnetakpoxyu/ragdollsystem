@@ -1,83 +1,67 @@
 using UnityEngine;
 
 /// <summary>
-/// Спавнер клиентов NPC. Максимум 4 NPC одновременно.
-/// Спавнит нового, когда кто-то сел за стол или когда сессия NPC закончилась.
+/// Простой спавнер NPC: один объект в сцене, точки спавна и префаб задаются в инспекторе.
+/// Не спавнит в Start. Вызывай извне: когда клиента посадили за комп — вызови OnClientSentToComputer();
+/// когда сессия закончилась (клиент ушёл) — вызови OnClientLeftComputer().
+/// Спавн только если есть свободный комп. PlayerInteract и ComputerSpot находят спавнер через FindFirstObjectByType.
 /// </summary>
 public class ClientNPCSpawner : MonoBehaviour
 {
-    static ClientNPCSpawner _instance;
-    public static ClientNPCSpawner Instance => _instance;
+    [Header("Префаб")]
+    [Tooltip("Перетащи префаб из папки Project, не объект из сцены — иначе клон унаследует состояние «сидит» и будет сломан.")]
+    [SerializeField] GameObject npcPrefab;
 
-    [Header("Спавн")]
-    [Tooltip("Префаб клиента (ClientNPC).")]
-    [SerializeField] GameObject clientPrefab;
-    [Tooltip("Точка появления нового NPC.")]
-    [SerializeField] Transform spawnPoint;
+    [Header("Точки спавна")]
+    [Tooltip("Перетащи сюда все точки (пустые объекты). Спавн — случайная из списка.")]
+    [SerializeField] Transform[] spawnPoints;
 
-    [Header("Маршрут")]
-    [Tooltip("Точка у стойки — куда идёт NPC.")]
-    [SerializeField] Transform counterTarget;
-    [Tooltip("Двери, которые должны быть открыты. Пусто — идёт сразу.")]
+    [Header("Смещение при спавне")]
+    [Tooltip("Подъём над точкой (м). Подгони под высоту пола.")]
+    [SerializeField] float heightOffset = 0f;
+    [Tooltip("Случайный разброс по XZ (м), чтобы не стакаться в одну точку.")]
+    [SerializeField] float randomRadius = 0.4f;
+
+    [Header("Куда идут NPC")]
+    [SerializeField] Transform adminSpot;
     [SerializeField] InteractableDoor[] doors;
 
-    [Header("Лимиты")]
-    [Tooltip("Максимум NPC одновременно.")]
-    [SerializeField] int maxClients = 4;
-
-    void Awake()
+    /// <summary>
+    /// Вызвать, когда игрок посадил клиента за компьютер. Из PlayerInteract после SeatClient.
+    /// </summary>
+    public void OnClientSentToComputer()
     {
-        if (_instance != null && _instance != this)
-        {
-            Destroy(gameObject);
-            return;
-        }
-        _instance = this;
+        TrySpawn();
     }
 
     /// <summary>
-    /// Текущее количество активных NPC.
+    /// Вызвать, когда сессия клиента закончилась и он уничтожен. Из ComputerSpot в EndSession.
     /// </summary>
-    public int ActiveClientCount
+    public void OnClientLeftComputer()
     {
-        get
-        {
-            var npcs = FindObjectsOfType<ClientNPC>();
-            return npcs != null ? npcs.Length : 0;
-        }
+        TrySpawn();
     }
 
-    /// <summary>
-    /// Спавнит нового NPC, если не достигнут лимит. Вызывается ComputerSpot.
-    /// </summary>
-    /// <param name="oneLeaving">true — один NPC скоро исчезнет (сессия закончилась).</param>
-    public void TrySpawn(bool oneLeaving = false)
+    void TrySpawn()
     {
-        int count = ActiveClientCount;
-        if (oneLeaving) count--; // Учитываем того, кого уничтожаем
-        if (count >= maxClients) return;
-        if (clientPrefab == null)
-        {
-            Debug.LogWarning("ClientNPCSpawner: Префаб клиента не задан!");
-            return;
-        }
+        if (npcPrefab == null || adminSpot == null) return;
+        if (ComputerSpot.GetRandomFreeSpot() == null) return;
+        if (spawnPoints == null || spawnPoints.Length == 0) return;
 
-        Vector3 pos = spawnPoint != null ? spawnPoint.position : transform.position;
-        Quaternion rot = spawnPoint != null ? spawnPoint.rotation : Quaternion.identity;
+        Transform point = spawnPoints[Random.Range(0, spawnPoints.Length)];
+        if (point == null) return;
 
-        GameObject go = Instantiate(clientPrefab, pos, rot);
+        Vector3 pos = point.position + Vector3.up * heightOffset
+            + new Vector3(Random.Range(-randomRadius, randomRadius), 0f, Random.Range(-randomRadius, randomRadius));
+        Quaternion rot = point.rotation;
 
+        GameObject go = Instantiate(npcPrefab, pos, rot);
         var npc = go.GetComponent<ClientNPC>();
         if (npc != null)
         {
-            npc.InitializeSpawn(counterTarget, doors);
-            Debug.Log($"ClientNPCSpawner: Заспавнен NPC. Всего: {ActiveClientCount}");
+            npc.InitializeSpawn(adminSpot, doors);
+            npc.ResetStateForSpawn();
+            go.transform.SetPositionAndRotation(pos, rot);
         }
-    }
-
-    void Start()
-    {
-        // Первый NPC при старте
-        TrySpawn();
     }
 }

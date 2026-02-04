@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.UI;
+using System.Collections.Generic;
 
 /// <summary>
 /// Одно игровое место за столом. При наведении курсора весь стол обводится зелёной обводкой (пока смотришь).
@@ -22,7 +23,15 @@ public class ComputerSpot : MonoBehaviour
     [Tooltip("Стул рядом с этим столом — сюда придёт NPC и сядет. Перетащи объект стула сюда.")]
     [SerializeField] Transform chair;
 
-    [Header("Оплата за игру")]
+    [Header("Баланс места (часы и тариф)")]
+    [Tooltip("Минимальное кол-во часов, которые клиент может взять за этим компом.")]
+    [SerializeField] float minSessionHours = 1f;
+    [Tooltip("Максимальное кол-во часов, которые клиент может взять за этим компом.")]
+    [SerializeField] float maxSessionHours = 8f;
+    [Tooltip("Тариф за 1 игровой час (цена за комп). Разные столы — разная цена для геймификации.")]
+    [SerializeField] float pricePerHour = 50f;
+
+    [Header("Игровое время")]
     [Tooltip("Игровое время (GameTime). Пусто — ищется автоматически в сцене.")]
     [SerializeField] GameTime gameTime;
 
@@ -46,6 +55,101 @@ public class ComputerSpot : MonoBehaviour
 
     static Shader _outlineShader;
     static Shader OutlineShader => _outlineShader != null ? _outlineShader : (_outlineShader = Shader.Find("NewCore/Outline Contour"));
+
+    static readonly List<ComputerSpot> _allSpots = new List<ComputerSpot>();
+
+    void OnEnable()
+    {
+        if (!_allSpots.Contains(this))
+            _allSpots.Add(this);
+    }
+
+    void OnDisable()
+    {
+        _allSpots.Remove(this);
+    }
+
+    /// <summary> Может ли это место принять клиента (есть стул). </summary>
+    public bool CanSeatClient => chair != null;
+
+    /// <summary> Количество мест, которые могут принять клиентов (есть стул). </summary>
+    public static int GetSeatableSpotCount()
+    {
+        int count = 0;
+        for (int i = 0; i < _allSpots.Count; i++)
+        {
+            if (_allSpots[i] != null && _allSpots[i].CanSeatClient)
+                count++;
+        }
+        return count;
+    }
+
+    /// <summary> Найти случайное свободное место за компьютером. null если все заняты или нет мест со стулом. </summary>
+    public static ComputerSpot GetRandomFreeSpot()
+    {
+        var free = GetFreeSpotsList();
+        if (free.Count == 0) return null;
+        return free[Random.Range(0, free.Count)];
+    }
+
+    /// <summary> Список всех свободных мест со стулом. </summary>
+    public static List<ComputerSpot> GetFreeSpotsList()
+    {
+        var free = new List<ComputerSpot>(_allSpots.Count);
+        for (int i = 0; i < _allSpots.Count; i++)
+        {
+            if (_allSpots[i] != null && !_allSpots[i].IsOccupied && _allSpots[i].CanSeatClient)
+                free.Add(_allSpots[i]);
+        }
+        return free;
+    }
+
+    /// <summary> Самое дешёвое свободное место (минимальный тариф). null если нет свободных. </summary>
+    public static ComputerSpot GetCheapestFreeSpot()
+    {
+        var free = GetFreeSpotsList();
+        if (free.Count == 0) return null;
+        ComputerSpot best = free[0];
+        for (int i = 1; i < free.Count; i++)
+        {
+            if (free[i].PricePerHour < best.PricePerHour)
+                best = free[i];
+        }
+        return best;
+    }
+
+    /// <summary> Самое дорогое свободное место (максимальный тариф). null если нет свободных. </summary>
+    public static ComputerSpot GetMostExpensiveFreeSpot()
+    {
+        var free = GetFreeSpotsList();
+        if (free.Count == 0) return null;
+        ComputerSpot best = free[0];
+        for (int i = 1; i < free.Count; i++)
+        {
+            if (free[i].PricePerHour > best.PricePerHour)
+                best = free[i];
+        }
+        return best;
+    }
+
+    /// <summary> Свободное место с распределением: 50% — подешевле, 50% — подороже (для баланса и разнообразия). </summary>
+    public static ComputerSpot GetFreeSpotWithPriceDistribution()
+    {
+        var free = GetFreeSpotsList();
+        if (free.Count == 0) return null;
+        if (free.Count == 1) return free[0];
+        var cheap = GetCheapestFreeSpot();
+        var expensive = GetMostExpensiveFreeSpot();
+        if (cheap == expensive) return cheap;
+        return Random.value < 0.5f ? cheap : expensive;
+    }
+
+    /// <summary> Минимальное кол-во часов за этим компом. </summary>
+    public float MinSessionHours => minSessionHours;
+    /// <summary> Максимальное кол-во часов за этим компом. </summary>
+    public float MaxSessionHours => maxSessionHours;
+    /// <summary> Тариф за 1 игровой час на этом компе. </summary>
+    public float PricePerHour => pricePerHour;
 
     Renderer[] _outlineRenderers;
     Material _outlineMaterial;
@@ -112,8 +216,10 @@ public class ComputerSpot : MonoBehaviour
     void Start()
     {
         if (gameTime == null)
-            gameTime = FindObjectOfType<GameTime>();
+            gameTime = FindFirstObjectByType<GameTime>();
         _mainCam = Camera.main;
+        if (chair == null)
+            Debug.LogWarning($"ComputerSpot на '{gameObject.name}' не имеет стула (chair). NPC не смогут сесть сюда.", this);
     }
 
     void LateUpdate()
@@ -170,13 +276,13 @@ public class ComputerSpot : MonoBehaviour
         if (_seatedClient != null)
         {
             Destroy(_seatedClient.gameObject);
-            // Спавним нового NPC на замену
-            ClientNPCSpawner.Instance?.TrySpawn(oneLeaving: true);
         }
 
         _seatedClient = null;
         isOccupied = false;
         SetHighlight(_highlighted);
+        var spawner = FindFirstObjectByType<ClientNPCSpawner>();
+        spawner?.OnClientLeftComputer();
     }
 
     void CreateTimerAboveClient()
@@ -260,16 +366,13 @@ public class ComputerSpot : MonoBehaviour
         _seatedClient = npc;
         _sessionDurationHours = npc.RequestedSessionHours;
         if (gameTime == null)
-            gameTime = FindObjectOfType<GameTime>();
+            gameTime = FindFirstObjectByType<GameTime>();
         _sessionStartTimeHours = gameTime != null ? gameTime.CurrentTimeHours : 0f;
         isOccupied = true;
         // Передаём NPC данные сессии для планирования реплик в игровом времени
         if (gameTime != null && npc.HasRecordedPhrase)
             npc.SetSessionInfo(gameTime, _sessionStartTimeHours, _sessionDurationHours);
         SetHighlight(_highlighted); // обновить цвет обводки на красный (занято)
-
-        // Спавним нового NPC (кто-то сел — освободилось место в очереди)
-        ClientNPCSpawner.Instance?.TrySpawn();
 
         return true;
     }

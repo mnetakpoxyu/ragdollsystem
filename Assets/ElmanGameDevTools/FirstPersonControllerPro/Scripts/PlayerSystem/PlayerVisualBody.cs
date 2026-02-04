@@ -68,6 +68,27 @@ namespace ElmanGameDevTools.PlayerSystem
         private float _bodyYaw;           // свой угол тела — подтягивается к камере с задержкой
         private bool _bodyYawInitialized;
 
+        /// <summary>Замороженный поворот тела и головы (режим видеонаблюдения — персонаж смотрит в монитор, не вертит головой при смене камер).</summary>
+        private bool _lookFrozen;
+        private Quaternion _frozenBodyRotation;
+        private Quaternion _frozenHeadRotation;
+
+        /// <summary>Зафиксировать текущий поворот тела и головы. Используется при входе в режим видеонаблюдения, чтобы персонаж не дёргал головой при переключении камер.</summary>
+        public void FreezeCurrentLook()
+        {
+            if (visualBody != null)
+                _frozenBodyRotation = visualBody.rotation;
+            if (_headBone != null)
+                _frozenHeadRotation = _headBone.rotation;
+            _lookFrozen = true;
+        }
+
+        /// <summary>Снять фиксацию поворота (при выходе из видеонаблюдения).</summary>
+        public void UnfreezeLook()
+        {
+            _lookFrozen = false;
+        }
+
         private void Start()
         {
             if (visualBody != null)
@@ -90,6 +111,16 @@ namespace ElmanGameDevTools.PlayerSystem
         private void LateUpdate()
         {
             if (!_headSetupDone || _cachedCamera == null) return;
+
+            // В режиме видеонаблюдения тело и голова остаются смотреть в монитор, не следуют за камерой
+            if (_lookFrozen)
+            {
+                if (visualBody != null)
+                    visualBody.rotation = _frozenBodyRotation;
+                if (_headBone != null)
+                    _headBone.rotation = _frozenHeadRotation;
+                return;
+            }
 
             if (keepHeadAttachedToBody)
             {

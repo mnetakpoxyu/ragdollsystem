@@ -32,8 +32,8 @@ public class GameTime : MonoBehaviour
     [Header("Запуск по дверям")]
     [Tooltip("Время не идёт, пока не открыты ВСЕ эти двери. Перетащи сюда 2 двери (для двойных — оба створки). Пусто — время идёт сразу.")]
     [SerializeField] InteractableDoor[] doorsToOpen;
-    [Tooltip("Скорость: сколько игровых часов за 1 реальную секунду. 0.01 ≈ 36 игр. сек за 1 реальн. сек (1 игр. мин ≈ 1.7 реальн. сек).")]
-    [SerializeField] float hoursPerRealSecond = 0.01f;
+    [Tooltip("Скорость: сколько игровых часов за 1 реальную секунду. Меньше = медленнее время. 0.00125 ≈ 1 игр. час за ~13 мин реального времени.")]
+    [SerializeField] float hoursPerRealSecond = 0.00125f;
 
     [Header("Режим отображения")]
     [Tooltip("Screen Space — время в углу экрана. World Space — время на этом объекте в мире (часы на стене).")]
@@ -223,7 +223,7 @@ public class GameTime : MonoBehaviour
 
     void CreateDefaultDisplay()
     {
-        var canvas = FindObjectOfType<Canvas>();
+        var canvas = FindFirstObjectByType<Canvas>();
         if (canvas == null)
         {
             var canvasObj = new GameObject("GameTimeCanvas");

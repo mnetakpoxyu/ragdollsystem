@@ -112,7 +112,9 @@ namespace ElmanGameDevTools.PlayerSystem
 
         private bool _isGrounded;
         private bool _isCrouching;
+#pragma warning disable 0414
         private bool _hasJumped;
+#pragma warning restore 0414
         private MovementState _currentMovementState = MovementState.Walking;
 
         private InputActionMap _playerMap;
@@ -194,11 +196,39 @@ namespace ElmanGameDevTools.PlayerSystem
 
         private void ReadInput()
         {
-            if (_playerMap == null) return;
+            if (_playerMap == null)
+            {
+                ResetInputState();
+                return;
+            }
+
+            if (IsInputBlocked())
+            {
+                ResetInputState();
+                return;
+            }
+
             _moveInput = _moveAction?.ReadValue<Vector2>() ?? Vector2.zero;
             _lookInput = _lookAction?.ReadValue<Vector2>() ?? Vector2.zero;
             _jumpTriggered = _jumpAction?.triggered ?? false;
             _crouchPressed = _crouchAction?.IsPressed() ?? false;
+        }
+
+        private bool IsInputBlocked()
+        {
+            if (Cursor.lockState != CursorLockMode.Locked) return true;
+            PlayerInputManager inputManager = PlayerInputManager.Instance;
+            return inputManager != null && inputManager.IsInputLocked;
+        }
+
+        private void ResetInputState()
+        {
+            _moveInput = Vector2.zero;
+            _lookInput = Vector2.zero;
+            _jumpTriggered = false;
+            _crouchPressed = false;
+            _smoothInputX = 0f;
+            _horizontalVelocity = Vector3.zero;
         }
 
         /// <summary>

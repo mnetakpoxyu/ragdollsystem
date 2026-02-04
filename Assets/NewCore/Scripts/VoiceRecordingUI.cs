@@ -19,6 +19,8 @@ public class VoiceRecordingUI : MonoBehaviour
     [SerializeField] Button stopButton;
     [Tooltip("Кнопка отмены.")]
     [SerializeField] Button cancelButton;
+    [Tooltip("Текст сверху: часы и сумма оплаты клиента (создаётся автоматически если не задан).")]
+    [SerializeField] Text clientInfoText;
 
     [Header("Настройки")]
     [Tooltip("Шрифт для UI (если не задан, используется стандартный).")]
@@ -91,6 +93,23 @@ public class VoiceRecordingUI : MonoBehaviour
 
         Font font = uiFont != null ? uiFont : Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
 
+        // Блок сверху: часы и оплата клиента
+        var clientInfoObj = new GameObject("ClientInfoText");
+        clientInfoObj.transform.SetParent(panelObj.transform, false);
+        clientInfoText = clientInfoObj.AddComponent<Text>();
+        clientInfoText.text = "";
+        clientInfoText.font = font;
+        clientInfoText.fontSize = 24;
+        clientInfoText.fontStyle = FontStyle.Bold;
+        clientInfoText.color = new Color(0.9f, 0.9f, 0.5f, 1f);
+        clientInfoText.alignment = TextAnchor.MiddleCenter;
+        var clientInfoRect = clientInfoObj.GetComponent<RectTransform>();
+        clientInfoRect.anchorMin = new Vector2(0, 1);
+        clientInfoRect.anchorMax = new Vector2(1, 1);
+        clientInfoRect.pivot = new Vector2(0.5f, 1);
+        clientInfoRect.sizeDelta = new Vector2(-40, 40);
+        clientInfoRect.anchoredPosition = new Vector2(0, -10);
+
         // Заголовок
         var titleObj = new GameObject("Title");
         titleObj.transform.SetParent(panelObj.transform, false);
@@ -106,7 +125,7 @@ public class VoiceRecordingUI : MonoBehaviour
         titleRect.anchorMax = new Vector2(1, 1);
         titleRect.pivot = new Vector2(0.5f, 1);
         titleRect.sizeDelta = new Vector2(-40, 50);
-        titleRect.anchoredPosition = new Vector2(0, -20);
+        titleRect.anchoredPosition = new Vector2(0, -70);
 
         // Текст статуса
         var statusObj = new GameObject("StatusText");
@@ -251,6 +270,18 @@ public class VoiceRecordingUI : MonoBehaviour
         // Блокируем курсор
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
+    }
+
+    /// <summary>
+    /// Показать сверху часы и сумму оплаты клиента (вызывать до или после ShowUI).
+    /// </summary>
+    public void SetClientInfo(float hours, float payment)
+    {
+        if (clientInfoText != null)
+        {
+            clientInfoText.text = string.Format("Клиент: {0:F1} ч., {1:F0} ₽", hours, payment);
+            clientInfoText.gameObject.SetActive(true);
+        }
     }
 
     /// <summary>

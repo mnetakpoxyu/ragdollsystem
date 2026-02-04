@@ -29,13 +29,9 @@ public class ClientNPC : MonoBehaviour
     [Tooltip("Ровно 2 двери (или любое количество): NPC пойдёт только когда ВСЕ эти двери открыты. Перетащи сюда 2 объекта с InteractableDoor. Пусто — идёт сразу.")]
     [SerializeField] InteractableDoor[] doors;
 
-    [Header("Оплата за игру (при взаимодействии E у стойки)")]
-    [Tooltip("Цена за 1 игровой час. Клиент «скажет» случайное кол-во часов и заплатит.")]
-    [SerializeField] float pricePerHour = 100f;
-    [Tooltip("Мин. часов, которые клиент хочет поиграть (случайное от Min до Max).")]
-    [SerializeField] float minSessionHours = 1f;
-    [Tooltip("Макс. часов, которые клиент хочет поиграть.")]
-    [SerializeField] float maxSessionHours = 3f;
+    [Header("Посадка за стол")]
+    [Tooltip("Подъём над точкой стула при посадке (м). Если NPC в полу — увеличь до 0.5–0.7.")]
+    [SerializeField] float sitHeightOffset = 0.55f;
 
     [Header("Движение")]
     [Tooltip("Скорость ходьбы.")]
@@ -46,6 +42,8 @@ public class ClientNPC : MonoBehaviour
     [SerializeField] float stuckMinMove = 0.15f;
 
     [Header("Голосовые реплики")]
+    [Tooltip("Громкость воспроизведения записанной фразы (1 = нормально, 2 = громче).")]
+    [SerializeField, Range(0.5f, 3f)] float phraseVolume = 2f;
     [Tooltip("Минимальный интервал между репликами (реальные секунды).")]
     [SerializeField] float minPhraseInterval = 30f;
     [Tooltip("Максимальный интервал между репликами (реальные секунды).")]
@@ -67,6 +65,8 @@ public class ClientNPC : MonoBehaviour
     float _requestedSessionHours;
     float _paymentAmount;
     bool _hasOrdered;
+    ComputerSpot _assignedSpot;
+    int _ensureOffNavMeshFrames;
 
     // Голосовые реплики (привязаны к игровому времени сессии)
     AudioClip _recordedPhrase;
@@ -90,6 +90,7 @@ public class ClientNPC : MonoBehaviour
 
         // Создаём AudioSource для воспроизведения реплик
         _audioSource = gameObject.AddComponent<AudioSource>();
+        _audioSource.volume = phraseVolume;
         _audioSource.spatialBlend = 1f; // 3D звук
         _audioSource.minDistance = 1f;
         _audioSource.maxDistance = voiceMaxDistance; // 12 корпусов персонажа
@@ -100,19 +101,89 @@ public class ClientNPC : MonoBehaviour
 
     void Start()
     {
+        int id = gameObject.GetInstanceID();
+        Vector3 posBefore = transform.position;
+        bool onNavBefore = _agent != null && _agent.isOnNavMesh;
+        Debug.Log($"[NPC {id}] Start: pos={posBefore}, pos.y={posBefore.y:F3}, isOnNavMesh={onNavBefore}");
+
         EnsureOnNavMesh();
+
+        Vector3 posAfter = transform.position;
+        bool onNavAfter = _agent != null && _agent.isOnNavMesh;
+        Debug.Log($"[NPC {id}] После EnsureOnNavMesh: pos={posAfter}, pos.y={posAfter.y:F3}, isOnNavMesh={onNavAfter}");
+
         if (counterTarget == null) return;
         if (AreAllDoorsOpen())
             GoToTarget();
+        // Если агент ещё не на NavMesh (часто у 3–4 NPC после спавна) — повторные попытки с нарастающей задержкой
+        if (_state == State.WaitingAtDoor && _agent != null && !_agent.isOnNavMesh)
+        {
+            Invoke(nameof(RetryGoToTargetAfterSpawn), 0.2f);
+            Invoke(nameof(RetryGoToTargetAfterSpawn), 0.6f);
+            Invoke(nameof(RetryGoToTargetAfterSpawn), 1.2f);
+        }
         _lastPositionForStuck = transform.position;
         _lastStuckCheckTime = Time.time;
     }
 
+    /// <summary>
+    /// Вызывается по таймеру после спавна: повторно ставим на NavMesh и отправляем к стойке (решает проблему, когда 4-й и далее NPC не шли к поинту).
+    /// </summary>
+    void RetryGoToTargetAfterSpawn()
+    {
+        if (this == null || _agent == null) return;
+        if (_state != State.WaitingAtDoor || counterTarget == null || !AreAllDoorsOpen()) return;
+        EnsureOnNavMesh();
+        GoToTarget();
+    }
+
+    /// <summary>
+    /// Ставит агента на NavMesh. Варпим почти на поверхность (0.05f), иначе Unity не считает агента onNavMesh
+    /// (особенно когда несколько NPC спавнятся в одной точке — 4-й и далее получали isOnNavMesh=false).
+    /// </summary>
     void EnsureOnNavMesh()
     {
+        if (_agent == null) return;
+        if (_agent.isOnNavMesh)
+        {
+            _ensureOffNavMeshFrames = 0;
+            return;
+        }
+        _ensureOffNavMeshFrames++;
+        Vector3 from = transform.position;
+        const float maxWarpDistance = 2f;
+        // Минимальный подъём над поверхностью — иначе Unity считает агента "над" мешем и isOnNavMesh=false
+        const float heightOffset = 0.05f;
+        bool found = NavMesh.SamplePosition(from, out NavMeshHit hit, maxWarpDistance, NavMesh.AllAreas);
+        if (!found)
+        {
+            // Повтор с небольшой случайной точкой — если спавн занят другими агентами
+            Vector3 fallback = from + new Vector3(UnityEngine.Random.Range(-0.3f, 0.3f), 0f, UnityEngine.Random.Range(-0.3f, 0.3f));
+            found = NavMesh.SamplePosition(fallback, out hit, maxWarpDistance, NavMesh.AllAreas);
+        }
+        if (!found) return;
+        float dist = Vector3.Distance(hit.position, from);
+        if (dist > maxWarpDistance) return;
+        Vector3 to = hit.position + Vector3.up * heightOffset;
+        // Не отказываемся от варпа вниз при спавне (агент 0.4 м над полом) — иначе остаётся в воздухе и не идёт. Запрещаем только сильное падение (> 1.5 м).
+        if (from.y - to.y > 1.5f) return;
+        _agent.Warp(to);
+    }
+
+    /// <summary>
+    /// Один раз подправить позицию на NavMesh при отправке к стулу (клиент у стойки мог быть чуть не на NavMesh).
+    /// Радиус больше, чем в EnsureOnNavMesh, но не телепортируем вниз.
+    /// </summary>
+    void EnsureOnNavMeshForSeat()
+    {
         if (_agent == null || _agent.isOnNavMesh) return;
-        if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 5f, NavMesh.AllAreas))
-            _agent.Warp(hit.position);
+        const float maxRadius = 2f;
+        const float heightOffset = 0.2f;
+        bool found = NavMesh.SamplePosition(transform.position, out NavMeshHit hit, maxRadius, NavMesh.AllAreas);
+        if (!found) return;
+        Vector3 to = hit.position + Vector3.up * heightOffset;
+        if (to.y < transform.position.y - 0.25f) return;
+        _agent.Warp(to);
     }
 
     void Update()
@@ -145,7 +216,9 @@ public class ClientNPC : MonoBehaviour
                         _state = State.SittingAtSeat;
                         if (_seatChair != null)
                         {
-                            transform.SetPositionAndRotation(_seatChair.position, _seatChair.rotation);
+                            Vector3 sitPos = _seatChair.position + Vector3.up * sitHeightOffset;
+                            Debug.Log($"[NPC {gameObject.GetInstanceID()}] SittingAtSeat: chair.position.y={_seatChair.position.y:F3}, sitHeightOffset={sitHeightOffset}, sitPos.y={sitPos.y:F3}");
+                            transform.SetPositionAndRotation(sitPos, _seatChair.rotation);
                             _agent.enabled = false;
                         }
                     }
@@ -229,7 +302,7 @@ public class ClientNPC : MonoBehaviour
     }
 
     /// <summary>
-    /// Инициализация при спавне: точка стойки и двери. Вызывается ClientNPCSpawner.
+    /// Инициализация при спавне: точка стойки и двери. Вызывается спавнером при создании NPC.
     /// </summary>
     public void InitializeSpawn(Transform counter, InteractableDoor[] doorList)
     {
@@ -238,15 +311,52 @@ public class ClientNPC : MonoBehaviour
     }
 
     /// <summary>
-    /// Вызывается игроком по E у стойки. Клиент «говорит», сколько часов хочет поиграть и платит сразу.
-    /// После этого игрок должен посадить его за стол.
+    /// Сброс состояния после спавна. Обязательно вызывать из спавнера после Instantiate:
+    /// иначе клон может унаследовать «сидячее» состояние (выключенный агент, поза) от исходного объекта.
+    /// </summary>
+    public void ResetStateForSpawn()
+    {
+        if (_agent != null)
+            _agent.enabled = true;
+        _state = State.WaitingAtDoor;
+        _seatChair = null;
+        _hasOrdered = false;
+        _requestedSessionHours = 0f;
+        _paymentAmount = 0f;
+        _assignedSpot = null;
+        _lastPositionForStuck = transform.position;
+        _lastStuckCheckTime = Time.time;
+        _recordedPhrase = null;
+        _phrasesLeftToPlay = 0;
+        _gameTime = null;
+        var anim = GetComponent<Animator>();
+        if (anim != null)
+            anim.Rebind();
+    }
+
+    /// <summary>
+    /// Назначить место за компьютером. Вызывается до OnInteract(), чтобы часы и тариф брались из спота.
+    /// </summary>
+    public void AssignSpot(ComputerSpot spot)
+    {
+        _assignedSpot = spot;
+    }
+
+    /// <summary>
+    /// Вызывается игроком по E у стойки. Часы и тариф берутся из назначенного ComputerSpot.
+    /// Клиент «говорит», сколько часов хочет поиграть и платит сразу.
     /// </summary>
     public void OnInteract()
     {
         if (_state != State.WaitingAtCounter || _hasOrdered) return;
+        if (_assignedSpot == null) return;
 
-        _requestedSessionHours = Mathf.Clamp(Random.Range(minSessionHours, maxSessionHours), 0.25f, 24f);
-        _paymentAmount = _requestedSessionHours * pricePerHour;
+        float minH = _assignedSpot.MinSessionHours;
+        float maxH = _assignedSpot.MaxSessionHours;
+        float tariff = _assignedSpot.PricePerHour;
+
+        _requestedSessionHours = Mathf.Clamp(Random.Range(minH, maxH), 0.25f, 24f);
+        _paymentAmount = _requestedSessionHours * tariff;
 
         if (PlayerBalance.Instance != null)
             PlayerBalance.Instance.Add(_paymentAmount);
@@ -260,8 +370,12 @@ public class ClientNPC : MonoBehaviour
     public void GoSitAt(Transform chair)
     {
         if (chair == null || _agent == null) return;
+        int id = gameObject.GetInstanceID();
         _seatChair = chair;
         EnsureOnNavMesh();
+        if (!_agent.isOnNavMesh)
+            EnsureOnNavMeshForSeat(); // клиент у стойки мог быть чуть не на NavMesh — один раз подправляем
+        Debug.Log($"[NPC {id}] GoSitAt: chair.y={chair.position.y:F3}, после Ensure isOnNavMesh={_agent.isOnNavMesh}, pos.y={transform.position.y:F3}");
         if (_agent.isOnNavMesh)
         {
             _agent.SetDestination(chair.position);
@@ -269,6 +383,8 @@ public class ClientNPC : MonoBehaviour
             _lastPositionForStuck = transform.position;
             _lastStuckCheckTime = Time.time;
         }
+        else
+            Debug.LogWarning($"[NPC {id}] GoSitAt: агент не на NavMesh — не идёт к стулу! pos={transform.position}", this);
     }
 
     public State CurrentState => _state;
@@ -282,6 +398,12 @@ public class ClientNPC : MonoBehaviour
 
     /// <summary> Клиент уже «заказал» сессию и ждёт посадки. </summary>
     public bool HasOrdered => _hasOrdered;
+
+    /// <summary> Назначенное место за компьютером (баланс — часы и тариф — берётся отсюда). </summary>
+    public ComputerSpot AssignedSpot => _assignedSpot;
+
+    /// <summary> Есть ли назначенное место (нужно для приёма заказа). </summary>
+    public bool HasAssignedSpot => _assignedSpot != null;
 
     /// <summary>
     /// Установить записанную голосовую реплику для этого клиента.
@@ -342,6 +464,7 @@ public class ClientNPC : MonoBehaviour
         if (_isPlayingPhrase || _audioSource.isPlaying) return;
 
         _audioSource.clip = _recordedPhrase;
+        _audioSource.volume = phraseVolume;
         _audioSource.Play();
         _isPlayingPhrase = true;
         _phrasesLeftToPlay--;
