@@ -2,14 +2,17 @@ using UnityEngine;
 using UnityEngine.UI;
 
 /// <summary>
-/// Повесь на объект с коллайдером. Когда игрок наводит прицел на этот объект,
-/// над ним появляется небольшой текст с балансом (и опционально иконкой).
-/// Баланс берётся из PlayerBalance (компонент на игроке или в сцене).
+/// Повесь на объект с коллайдером. Может показывать баланс только при наведении прицела
+/// или всегда над объектом (для кассы). Баланс берётся из PlayerBalance.
 /// </summary>
 [RequireComponent(typeof(Collider))]
 [AddComponentMenu("NewCore/Balance Display Target")]
 public class BalanceDisplayTarget : MonoBehaviour
 {
+    [Header("Режим отображения")]
+    [Tooltip("Включить — баланс всегда висит над объектом (для кассы). Выключить — показывается только при наведении прицела.")]
+    [SerializeField] bool alwaysShowBalance;
+
     [Header("Позиция подсказки")]
     [Tooltip("Точка, над которой показывается баланс. Пусто — центр этого объекта.")]
     [SerializeField] Transform anchor;
@@ -62,7 +65,7 @@ public class BalanceDisplayTarget : MonoBehaviour
         _mainCam = Camera.main;
         CreatePopup();
         if (_panel != null)
-            _panel.SetActive(false);
+            _panel.SetActive(alwaysShowBalance);
     }
 
     void CreateOutline()
@@ -132,7 +135,8 @@ public class BalanceDisplayTarget : MonoBehaviour
     {
         if (_mainCam == null)
             _mainCam = Camera.main;
-        if (!_aimedAt || _panel == null || !_panel.activeSelf) return;
+        bool shouldShow = _aimedAt || alwaysShowBalance;
+        if (!shouldShow || _panel == null || !_panel.activeSelf) return;
 
         Transform root = anchor != null ? anchor : transform;
         Vector3 worldPos = root.position + Vector3.up * heightOffset;
@@ -161,7 +165,7 @@ public class BalanceDisplayTarget : MonoBehaviour
         _aimedAt = aimed;
         SetOutline(aimed);
         if (_panel != null)
-            _panel.SetActive(aimed);
+            _panel.SetActive(aimed || alwaysShowBalance);
     }
 
     void CreatePopup()

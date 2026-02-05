@@ -1,12 +1,16 @@
+using System;
 using UnityEngine;
 
 /// <summary>
 /// Хранит баланс игрока. Повесь на игрока или любой постоянный объект (например, GameManager).
 /// BalanceDisplayTarget берёт значение отсюда для отображения над объектами.
+/// При изменении баланса вызывается OnBalanceChanged(delta) — для поп-апов над кассой.
 /// </summary>
 [AddComponentMenu("NewCore/Player Balance")]
 public class PlayerBalance : MonoBehaviour
 {
+    /// <summary> Вызывается при каждом изменении баланса. Аргумент — прирост (положительный или отрицательный). </summary>
+    public static event Action<float> OnBalanceChanged;
     [Header("Баланс")]
     [Tooltip("Текущий баланс игрока.")]
     [SerializeField] float balance = 1000f;
@@ -43,6 +47,7 @@ public class PlayerBalance : MonoBehaviour
     public void Add(float amount)
     {
         Balance += amount;
+        OnBalanceChanged?.Invoke(amount);
     }
 
     /// <summary> Списать сумму. Возвращает true, если баланса хватило. </summary>

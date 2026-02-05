@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 69b591274ebe6f94ab469f6c69b1b988
+ShaderImporter:
+  externalObjects: {}
+  defaultTextures: []
+  nonModifiableTextures: []
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 257178
+  packageName: Design Mascot
+  packageVersion: 1.0
+  assetPath: Assets/LB3D/Design_Mascots/Shaders/Toon-Lined.shader
+  uploadId: 602270

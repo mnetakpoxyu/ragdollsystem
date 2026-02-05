@@ -16,12 +16,16 @@ public class ComputerSpot : MonoBehaviour
     [SerializeField] Color outlineColor = new Color(0.15f, 1f, 0.4f, 1f);
     [Tooltip("Цвет обводки когда место занято.")]
     [SerializeField] Color occupiedOutlineColor = new Color(0.9f, 0.15f, 0.15f, 1f);
+    [Tooltip("Цвет обводки когда комп сломан (пустой или с клиентом ждёт починки).")]
+    [SerializeField] Color brokenOutlineColor = new Color(1f, 0.5f, 0f, 1f);
     [Tooltip("Толщина обводки в метрах — ровная скорлупа вокруг стола.")]
     [SerializeField, Range(0.02f, 0.25f)] float outlineWidth = 0.08f;
 
     [Header("Место для посадки")]
-    [Tooltip("Стул рядом с этим столом — сюда придёт NPC и сядет. Перетащи объект стула сюда.")]
+    [Tooltip("Стул рядом с этим столом — к нему идёт NPC. Перетащи объект стула сюда.")]
     [SerializeField] Transform chair;
+    [Tooltip("Дочерний объект стула: поставь точку там, где должна быть ПОПА NPC когда он сидит. Поворот = куда смотрит. Анимация «садясь» может съезжать в эту точку. Пусто — используется центр стула + смещение.")]
+    [SerializeField] Transform npcSitPoint;
 
     [Header("Баланс места (часы и тариф)")]
     [Tooltip("Минимальное кол-во часов, которые клиент может взять за этим компом.")]
@@ -35,8 +39,10 @@ public class ComputerSpot : MonoBehaviour
     [Tooltip("Игровое время (GameTime). Пусто — ищется автоматически в сцене.")]
     [SerializeField] GameTime gameTime;
 
-    [Header("Таймер над клиентом")]
-    [Tooltip("Высота таймера над головой клиента (метры).")]
+    [Header("Таймер игровой сессии")]
+    [Tooltip("Пустой объект, куда ставить таймер (позиция в мире). Создай Empty, выставь над клиентом — сюда привяжется таймер. Пусто — таймер над NPC по смещению ниже.")]
+    [SerializeField] Transform timerAnchor;
+    [Tooltip("Высота таймера над головой клиента (метры). Используется только если Timer Anchor не задан.")]
     [SerializeField] float timerHeightOffset = 1.2f;
     [Tooltip("Масштаб таймера в мире.")]
     [SerializeField] float timerWorldScale = 0.008f;
@@ -52,6 +58,18 @@ public class ComputerSpot : MonoBehaviour
     [Header("Состояние места")]
     [Tooltip("Занято ли место (выставляется автоматически при посадке NPC).")]
     [SerializeField] bool isOccupied;
+
+    [Header("Поломка компьютера")]
+    [Tooltip("Вероятность поломки за сессию (0–1). Может не выпасть ни разу за игру.")]
+    [SerializeField, Range(0f, 1f)] float breakdownChancePerSession = 0.4f;
+    [Tooltip("Сколько секунд (реального времени) у админа на починку, пока клиент ждёт. Не успел — клиент уходит, комп сломан.")]
+    [SerializeField] float repairTimeLimitSeconds = 45f;
+    [Tooltip("Минимальная доля сессии (0–1), после которой может выпасть поломка (чтобы клиент успел сесть).")]
+    [SerializeField, Range(0.05f, 0.9f)] float breakdownMinSessionElapsed = 0.1f;
+    [Tooltip("Текст над головой при поломке (без восклицательного знака — выводится как есть).")]
+    [SerializeField] string breakdownLabel = "Ремонт";
+    [Tooltip("Размер шрифта надписи «Ремонт» (таймер сессии использует Timer Font Size).")]
+    [SerializeField] int breakdownFontSize = 18;
 
     static Shader _outlineShader;
     static Shader OutlineShader => _outlineShader != null ? _outlineShader : (_outlineShader = Shader.Find("NewCore/Outline Contour"));
@@ -84,7 +102,7 @@ public class ComputerSpot : MonoBehaviour
         return count;
     }
 
-    /// <summary> Найти случайное свободное место за компьютером. null если все заняты или нет мест со стулом. </summary>
+    /// <summary> Найти случайное свободное место за компьютером. null если все заняты или сломаны, или нет мест со стулом. </summary>
     public static ComputerSpot GetRandomFreeSpot()
     {
         var free = GetFreeSpotsList();
@@ -92,13 +110,27 @@ public class ComputerSpot : MonoBehaviour
         return free[Random.Range(0, free.Count)];
     }
 
-    /// <summary> Список всех свободных мест со стулом. </summary>
+    /// <summary> Место, куда можно посадить нового клиента: свободное или сломанное (после починки). Для спавна: есть ли хотя бы одно такое место. </summary>
+    public static ComputerSpot GetRandomSpotForNewClient()
+    {
+        var list = new List<ComputerSpot>(_allSpots.Count);
+        for (int i = 0; i < _allSpots.Count; i++)
+        {
+            var s = _allSpots[i];
+            if (s != null && s.CanSeatClient && !s.IsOccupied)
+                list.Add(s);
+        }
+        if (list.Count == 0) return null;
+        return list[Random.Range(0, list.Count)];
+    }
+
+    /// <summary> Список всех свободных мест со стулом (сломанные места не считаются свободными). </summary>
     public static List<ComputerSpot> GetFreeSpotsList()
     {
         var free = new List<ComputerSpot>(_allSpots.Count);
         for (int i = 0; i < _allSpots.Count; i++)
         {
-            if (_allSpots[i] != null && !_allSpots[i].IsOccupied && _allSpots[i].CanSeatClient)
+            if (_allSpots[i] != null && !_allSpots[i].IsOccupied && !_allSpots[i].IsBroken && _allSpots[i].CanSeatClient)
                 free.Add(_allSpots[i]);
         }
         return free;
@@ -157,6 +189,8 @@ public class ComputerSpot : MonoBehaviour
     ClientNPC _seatedClient;
     float _sessionStartTimeHours;
     float _sessionDurationHours;
+    bool _clientGoneForDrink;
+    float _remainingSessionHours;
     Canvas _timerCanvas;
     Text _timerText;
     Camera _mainCam;
@@ -226,7 +260,20 @@ public class ComputerSpot : MonoBehaviour
     {
         if (_mainCam == null)
             _mainCam = Camera.main;
+
+        // Поломка в процессе: тикаем таймер; истёк — клиент уходит, комп сломан. Пока клиент за напитком — таймер не тикает.
+        if (_breakdownInProgress && !_clientGoneForDrink)
+        {
+            _breakdownTimerRemaining -= Time.deltaTime;
+            if (_breakdownTimerRemaining <= 0f)
+            {
+                EndSessionDueToBreakdown();
+                return;
+            }
+        }
+
         if (!isOccupied || _seatedClient == null || gameTime == null) return;
+        if (_clientGoneForDrink) return;
 
         float elapsed = GetElapsedHours();
         if (elapsed >= _sessionDurationHours)
@@ -235,20 +282,44 @@ public class ComputerSpot : MonoBehaviour
             return;
         }
 
-        // Таймер только когда клиент уже сел за стол
-        if (_seatedClient.CurrentState == ClientNPC.State.SittingAtSeat)
+        // Случайная поломка за сессию (один раз за сессию, после минимальной доли сессии). Пока клиент за напитком — не ломаем.
+        if (!_breakdownRolled && !_clientGoneForDrink && _seatedClient.CurrentState == ClientNPC.State.SittingAtSeat && elapsed >= _sessionDurationHours * breakdownMinSessionElapsed)
+        {
+            _breakdownRolled = true;
+            if (Random.value < breakdownChancePerSession)
+            {
+                _breakdownInProgress = true;
+                _breakdownTimerRemaining = repairTimeLimitSeconds;
+            }
+        }
+
+        // Таймер только когда клиент уже сел за стол и не ушёл за напитком
+        if (_seatedClient.CurrentState == ClientNPC.State.SittingAtSeat && !_clientGoneForDrink)
         {
             if (_timerCanvas == null)
                 CreateTimerAboveClient();
 
             if (_timerCanvas != null && _timerText != null)
             {
-                float remainingHours = _sessionDurationHours - elapsed;
-                int h = Mathf.FloorToInt(remainingHours);
-                int m = Mathf.Clamp(Mathf.FloorToInt((remainingHours - h) * 60f), 0, 59);
-                _timerText.text = string.Format("{0}:{1:D2}", h, m);
+                if (_breakdownInProgress)
+                {
+                    string label = breakdownLabel.Trim().TrimEnd('!');
+                    _timerText.text = label;
+                    _timerText.fontSize = breakdownFontSize;
+                    _timerText.color = Color.Lerp(Color.red, timerTextColor, 0.5f);
+                }
+                else
+                {
+                    float remainingHours = _sessionDurationHours - elapsed;
+                    int h = Mathf.FloorToInt(remainingHours);
+                    int m = Mathf.Clamp(Mathf.FloorToInt((remainingHours - h) * 60f), 0, 59);
+                    _timerText.text = string.Format("{0}:{1:D2}", h, m);
+                    _timerText.fontSize = timerFontSize;
+                    _timerText.color = timerTextColor;
+                }
 
-                _timerCanvas.transform.position = _seatedClient.transform.position + Vector3.up * timerHeightOffset;
+                Vector3 timerPos = timerAnchor != null ? timerAnchor.position : _seatedClient.transform.position + Vector3.up * timerHeightOffset;
+                _timerCanvas.transform.position = timerPos;
                 if (_mainCam != null)
                     _timerCanvas.transform.rotation = Quaternion.LookRotation(_timerCanvas.transform.position - _mainCam.transform.position);
             }
@@ -272,6 +343,7 @@ public class ComputerSpot : MonoBehaviour
     void EndSession()
     {
         DestroyTimer();
+        _breakdownInProgress = false;
         // Оплата уже получена при взаимодействии E у стойки
         if (_seatedClient != null)
         {
@@ -285,6 +357,59 @@ public class ComputerSpot : MonoBehaviour
         spawner?.OnClientLeftComputer();
     }
 
+    /// <summary> Таймаут починки: клиент ушёл, комп сломан. Клиенту возвращаем деньги за сессию. Запускаем спавн нового клиента. </summary>
+    void EndSessionDueToBreakdown()
+    {
+        float refund = _seatedClient != null ? _seatedClient.PaymentAmount : 0f;
+        DestroyTimer();
+        if (_seatedClient != null)
+            Destroy(_seatedClient.gameObject);
+        _seatedClient = null;
+        isOccupied = false;
+        isBroken = true;
+        _breakdownInProgress = false;
+        SetHighlight(_highlighted);
+        if (refund > 0f && PlayerBalance.Instance != null)
+            PlayerBalance.Instance.Add(-refund);
+        var spawner = FindFirstObjectByType<ClientNPCSpawner>();
+        spawner?.OnClientLeftComputer();
+    }
+
+    /// <summary> Клиент ушёл за напитком — ставим сессию на паузу. </summary>
+    public void PauseSessionForDrink()
+    {
+        if (_seatedClient == null || !isOccupied) return;
+        _clientGoneForDrink = true;
+        _remainingSessionHours = _sessionDurationHours - GetElapsedHours();
+        _remainingSessionHours = Mathf.Max(0.01f, _remainingSessionHours);
+    }
+
+    /// <summary> Клиент вернулся с напитком — возобновляем сессию. </summary>
+    public void ResumeSessionForClient(ClientNPC npc)
+    {
+        if (_seatedClient != npc || !_clientGoneForDrink || gameTime == null) return;
+        _clientGoneForDrink = false;
+        _sessionStartTimeHours = gameTime.CurrentTimeHours;
+        _sessionDurationHours = _remainingSessionHours;
+    }
+
+    /// <summary> Игрок починил комп (удерживал E). Если была поломка при клиенте — клиент остаётся; если пустой сломанный — место снова свободно. </summary>
+    public void CompleteRepair()
+    {
+        if (_breakdownInProgress)
+        {
+            _breakdownInProgress = false;
+            SetHighlight(_highlighted); // сразу обновить обводку: занято (красный), а не оранжевый
+        }
+        else if (isBroken)
+        {
+            isBroken = false;
+            SetHighlight(_highlighted);
+            var spawner = FindFirstObjectByType<ClientNPCSpawner>();
+            spawner?.OnClientLeftComputer();
+        }
+    }
+
     void CreateTimerAboveClient()
     {
         var canvasObj = new GameObject("ClientTimerCanvas");
@@ -295,7 +420,7 @@ public class ComputerSpot : MonoBehaviour
 
         canvasObj.AddComponent<CanvasScaler>();
         var rect = canvasObj.GetComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(120f, 40f);
+        rect.sizeDelta = new Vector2(160f, 40f);
         rect.pivot = new Vector2(0.5f, 0.5f);
         rect.localScale = Vector3.one * timerWorldScale;
 
@@ -303,13 +428,14 @@ public class ComputerSpot : MonoBehaviour
         textObj.transform.SetParent(canvasObj.transform, false);
         _timerText = textObj.AddComponent<Text>();
         _timerText.text = "0:00";
-        // Используем шрифт из настроек или стандартный
         _timerText.font = timerFont != null ? timerFont : Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         _timerText.fontSize = timerFontSize;
         _timerText.fontStyle = FontStyle.Bold;
         _timerText.color = timerTextColor;
         _timerText.alignment = TextAnchor.MiddleCenter;
         _timerText.raycastTarget = false;
+        _timerText.horizontalOverflow = HorizontalWrapMode.Overflow;
+        _timerText.verticalOverflow = VerticalWrapMode.Overflow;
 
         var outline = textObj.AddComponent<Outline>();
         outline.effectColor = timerOutlineColor;
@@ -343,7 +469,8 @@ public class ComputerSpot : MonoBehaviour
     {
         _highlighted = on;
         if (_outlineRenderers == null || _outlineMaterial == null) return;
-        _outlineMaterial.SetColor("_OutlineColor", isOccupied ? occupiedOutlineColor : outlineColor);
+        Color c = (isBroken || _breakdownInProgress) ? brokenOutlineColor : (isOccupied ? occupiedOutlineColor : outlineColor);
+        _outlineMaterial.SetColor("_OutlineColor", c);
         foreach (Renderer r in _outlineRenderers)
         {
             if (r != null)
@@ -358,17 +485,33 @@ public class ComputerSpot : MonoBehaviour
         set => isOccupied = value;
     }
 
-    /// <summary> Посадить клиента за этот стол. NPC пойдёт к стулу и сядет. Возвращает true, если место было свободно. </summary>
+    /// <summary> Комп сломан (клиент ушёл по таймауту или сломан пустой). Пока не починишь — новое место не даётся. </summary>
+    public bool IsBroken => isBroken;
+    /// <summary> Клиент ушёл за напитком — сессия на паузе. </summary>
+    public bool IsClientGoneForDrink => _clientGoneForDrink;
+    /// <summary> Сейчас идёт поломка: клиент сидит, над головой таймер починки. Успел починить — клиент остаётся. </summary>
+    public bool IsBreakdownInProgress => _breakdownInProgress;
+
+    bool isBroken;
+    bool _breakdownInProgress;
+    float _breakdownTimerRemaining;
+    bool _breakdownRolled;
+
+    /// <summary> Посадить клиента за этот стол. NPC пойдёт к стулу и сядет. Возвращает true, если место было свободно. За сломанный стол сажать нельзя — сначала починить. Баланс зачисляется при посадке. </summary>
     public bool SeatClient(ClientNPC npc)
     {
-        if (npc == null || isOccupied || chair == null || !npc.HasOrdered) return false;
-        npc.GoSitAt(chair);
+        if (npc == null || isOccupied || isBroken || chair == null || !npc.HasOrdered) return false;
+        npc.GoSitAt(chair, npcSitPoint);
         _seatedClient = npc;
         _sessionDurationHours = npc.RequestedSessionHours;
         if (gameTime == null)
             gameTime = FindFirstObjectByType<GameTime>();
         _sessionStartTimeHours = gameTime != null ? gameTime.CurrentTimeHours : 0f;
         isOccupied = true;
+        _breakdownRolled = false;
+        // Зачисляем оплату за сессию только когда клиента отправили за комп
+        if (npc.PaymentAmount > 0f && PlayerBalance.Instance != null)
+            PlayerBalance.Instance.Add(npc.PaymentAmount);
         // Передаём NPC данные сессии для планирования реплик в игровом времени
         if (gameTime != null && npc.HasRecordedPhrase)
             npc.SetSessionInfo(gameTime, _sessionStartTimeHours, _sessionDurationHours);

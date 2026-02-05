@@ -30,6 +30,14 @@ public class PlayerInteract : MonoBehaviour
     [Tooltip("Текст активной задачи (например «Клиент хочет поиграть…»). Если не задан — создаётся автоматически.")]
     [SerializeField] Text taskText;
 
+    [Header("Починка компьютера")]
+    [Tooltip("Мини-игра ввода кода. Если задан — по E открывается она; иначе — удержание E (кружок).")]
+    [SerializeField] RepairMinigameUI repairMinigameUI;
+    [Tooltip("Сколько секунд удерживать E для починки, если мини-игра не используется.")]
+    [SerializeField] float repairHoldDurationSeconds = 3f;
+    [Tooltip("UI Image для круга починки (когда мини-игра отключена).")]
+    [SerializeField] Image repairProgressImage;
+
     [Header("Запись голоса")]
     [Tooltip("UI для записи голоса клиента (создаётся автоматически если не задан). Используется только VoiceRecorder — окно не показывается.")]
     [SerializeField] VoiceRecordingUI voiceRecordingUI;
@@ -47,7 +55,9 @@ public class PlayerInteract : MonoBehaviour
     ClientNPC _clientWaitingToSeat;
     SurveillanceMonitor _currentMonitor;
     BoomboxInteractable _currentBoombox;
+    DrinkStock _currentDrinkStock;
     VoiceRecorder _voiceRecorder;
+    float _repairProgress;
     AudioSource _previewAudioSource;
 
     enum VoiceRecordState { None, Idle, Recording, HasRecording }
@@ -62,6 +72,8 @@ public class PlayerInteract : MonoBehaviour
     const string HintFree = "Свободен";
     const string HintOccupied = "Занят";
     const string HintSeatClient = "Посадить клиента  [E]";
+    const string HintRepair = "Удерживайте [E] — починка";
+    const string HintRepairMinigame = "Починить [E]";
 
     void Start()
     {
@@ -96,6 +108,27 @@ public class PlayerInteract : MonoBehaviour
         }
 
         // Создаём VoiceRecordingUI если не задан (нужен только VoiceRecorder на нём)
+        if (repairMinigameUI == null)
+        {
+            repairMinigameUI = FindFirstObjectByType<RepairMinigameUI>();
+            if (repairMinigameUI == null)
+            {
+                var go = new GameObject("RepairMinigameUI");
+                repairMinigameUI = go.AddComponent<RepairMinigameUI>();
+            }
+        }
+        if (repairProgressImage == null)
+            CreateDefaultRepairProgressCircle();
+        if (repairProgressImage != null)
+        {
+            repairProgressImage.gameObject.SetActive(false);
+            repairProgressImage.type = Image.Type.Filled;
+            repairProgressImage.fillMethod = Image.FillMethod.Radial360;
+            repairProgressImage.fillOrigin = (int)Image.Origin360.Top;
+            repairProgressImage.fillClockwise = true;
+            repairProgressImage.fillAmount = 0f;
+        }
+
         if (voiceRecordingUI == null)
         {
             var voiceUIObj = new GameObject("VoiceRecordingUI");
@@ -153,6 +186,45 @@ public class PlayerInteract : MonoBehaviour
         }
     }
 
+    void CreateDefaultRepairProgressCircle()
+    {
+        var canvasObj = new GameObject("RepairProgressCanvas");
+        var canvas = canvasObj.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        canvas.sortingOrder = 100;
+        canvasObj.AddComponent<CanvasScaler>();
+        canvasObj.AddComponent<GraphicRaycaster>();
+
+        var imageObj = new GameObject("RepairProgressImage");
+        imageObj.transform.SetParent(canvasObj.transform, false);
+        repairProgressImage = imageObj.AddComponent<Image>();
+        repairProgressImage.color = new Color(1f, 0.9f, 0.2f, 0.9f);
+
+        // Кольцо (с отверстием): внутренний радиус — дырка, внешний — обод
+        int size = 64;
+        var tex = new Texture2D(size, size);
+        Color clear = new Color(0, 0, 0, 0);
+        Color white = Color.white;
+        Vector2 c = new Vector2(size / 2f, size / 2f);
+        float outerR = size / 2f - 1f;
+        float innerR = outerR * 0.52f; // отверстие ~52% радиуса — тонкое кольцо
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                float d = Vector2.Distance(new Vector2(x, y), c);
+                tex.SetPixel(x, y, (d <= outerR && d >= innerR) ? white : clear);
+            }
+        tex.Apply();
+        repairProgressImage.sprite = Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f));
+
+        var rect = imageObj.GetComponent<RectTransform>();
+        rect.anchorMin = new Vector2(0.5f, 0.5f);
+        rect.anchorMax = new Vector2(0.5f, 0.5f);
+        rect.pivot = new Vector2(0.5f, 0.5f);
+        rect.sizeDelta = new Vector2(56, 56);
+        rect.anchoredPosition = Vector2.zero;
+    }
+
     void CreateDefaultHint()
     {
         var canvasObj = new GameObject("InteractHintCanvas");
@@ -200,6 +272,7 @@ public class PlayerInteract : MonoBehaviour
         ComputerSpot hitSpot = null;
         BalanceDisplayTarget hitBalanceTarget = null;
         BoomboxInteractable hitBoombox = null;
+        DrinkStock hitDrinkStock = null;
         _currentMonitor = null;
 
         Ray ray = _cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
@@ -208,13 +281,20 @@ public class PlayerInteract : MonoBehaviour
             hitDoor = hit.collider.GetComponentInParent<InteractableDoor>();
             hitClient = hit.collider.GetComponentInParent<ClientNPC>();
             hitSpot = hit.collider.GetComponentInParent<ComputerSpot>();
+            if (hitSpot == null)
+            {
+                var link = hit.collider.GetComponentInParent<ComputerSpotLink>();
+                if (link != null) hitSpot = link.Spot;
+            }
             var monitor = hit.collider.GetComponentInParent<SurveillanceMonitor>();
             hitBalanceTarget = hit.collider.GetComponentInParent<BalanceDisplayTarget>();
             hitBoombox = hit.collider.GetComponentInParent<BoomboxInteractable>();
+            hitDrinkStock = hit.collider.GetComponent<DrinkStock>() ?? hit.collider.GetComponentInParent<DrinkStock>() ?? hit.collider.GetComponentInChildren<DrinkStock>();
             _currentMonitor = monitor;
         }
 
         _currentBoombox = hitBoombox;
+        _currentDrinkStock = hitDrinkStock;
 
         if (hitDoor != _currentDoor)
         {
@@ -248,11 +328,15 @@ public class PlayerInteract : MonoBehaviour
                 _currentBalanceTarget.SetAimedAt(true);
         }
 
-        // Подсказка при записи голоса клиента (наведён на того же клиента)
+        // Клиент ждёт напиток (стоит у стойки)
+        ClientNPC thirstyClient = (hitClient != null && hitClient.CurrentState == ClientNPC.State.WaitingForDrink) ? hitClient : null;
+
         bool showingVoiceHint = _clientWaitingToSeat != null && _currentClient == _clientWaitingToSeat &&
             (_voiceRecordState == VoiceRecordState.Idle || _voiceRecordState == VoiceRecordState.Recording || _voiceRecordState == VoiceRecordState.HasRecording);
 
-        bool showHint = _currentDoor != null || _currentClient != null || _currentSpot != null || _currentMonitor != null || _currentBoombox != null || showingVoiceHint;
+        bool showHint = _currentDoor != null || _currentClient != null || (thirstyClient != null && PlayerCarry.Instance != null && PlayerCarry.Instance.HasDrink) || _currentSpot != null || _currentMonitor != null || _currentBoombox != null || _currentDrinkStock != null || showingVoiceHint;
+        if (showHint && _currentSpot != null && (_currentSpot.IsBreakdownInProgress || _currentSpot.IsBroken) && RepairMinigameUI.IsActive)
+            showHint = false;
         if (hintText != null)
         {
             hintText.gameObject.SetActive(showHint);
@@ -276,7 +360,9 @@ public class PlayerInteract : MonoBehaviour
                 }
                 else if (_currentSpot != null)
                 {
-                    if (!_currentSpot.IsOccupied && _clientWaitingToSeat != null && _clientWaitingToSeat.AssignedSpot == _currentSpot)
+                    if (_currentSpot.IsBreakdownInProgress || _currentSpot.IsBroken)
+                        hintText.text = (repairMinigameUI != null) ? HintRepairMinigame : HintRepair;
+                    else if (!_currentSpot.IsOccupied && !_currentSpot.IsBroken && _clientWaitingToSeat != null && _clientWaitingToSeat.AssignedSpot == _currentSpot)
                         hintText.text = HintSeatClient;
                     else
                         hintText.text = _currentSpot.IsOccupied ? HintOccupied : HintFree;
@@ -284,6 +370,14 @@ public class PlayerInteract : MonoBehaviour
                 else if (_currentMonitor != null)
                 {
                     hintText.text = "Смотреть камеры  [E]";
+                }
+                else if (thirstyClient != null && PlayerCarry.Instance != null && PlayerCarry.Instance.HasDrink)
+                {
+                    hintText.text = "Отдать напиток  [E]";
+                }
+                else if (_currentDrinkStock != null)
+                {
+                    hintText.text = string.Format("Газировка  [E] взять (в запасе: {0})", _currentDrinkStock.Stock);
                 }
                 else if (_currentClient != null && _currentClient.CurrentState == ClientNPC.State.WaitingAtCounter && !_currentClient.HasOrdered && ComputerSpot.GetFreeSpotsList().Count == 0)
                 {
@@ -294,16 +388,79 @@ public class PlayerInteract : MonoBehaviour
             }
         }
 
-        // Задача сверху только когда смотришь на этого же клиента — увёл курсор = всё закрыто
+        // Задача сверху: клиент у стойки (часы/оплата) или клиент хочет попить
         if (taskText != null)
         {
-            bool showTask = _clientWaitingToSeat != null && _currentClient == _clientWaitingToSeat;
+            bool showTaskOrder = _clientWaitingToSeat != null && _currentClient == _clientWaitingToSeat;
+            bool showTaskThirsty = thirstyClient != null;
+            bool showTask = showTaskOrder || showTaskThirsty;
             taskText.gameObject.SetActive(showTask);
-            if (showTask && _clientWaitingToSeat != null && _clientWaitingToSeat.HasOrdered)
+            if (showTask)
             {
-                float h = _clientWaitingToSeat.RequestedSessionHours;
-                float pay = _clientWaitingToSeat.PaymentAmount;
-                taskText.text = string.Format("Клиент: {0:F1} ч., {1:F0} ₽", h, pay);
+                if (showTaskThirsty)
+                    taskText.text = "Хочет попить";
+                else if (showTaskOrder && _clientWaitingToSeat != null && _clientWaitingToSeat.HasOrdered)
+                {
+                    float h = _clientWaitingToSeat.RequestedSessionHours;
+                    float pay = _clientWaitingToSeat.PaymentAmount;
+                    taskText.text = string.Format("Клиент: {0:F1} ч., {1:F0} ₽", h, pay);
+                }
+            }
+        }
+
+        // Починка компьютера: мини-игра по E или удержание E
+        bool spotNeedsRepair = _currentSpot != null && (_currentSpot.IsBreakdownInProgress || _currentSpot.IsBroken);
+        if (RepairMinigameUI.IsActive)
+        {
+            _repairProgress = 0f;
+            if (repairProgressImage != null)
+                repairProgressImage.gameObject.SetActive(false);
+        }
+        else if (!spotNeedsRepair)
+        {
+            _repairProgress = 0f;
+            if (repairProgressImage != null)
+                repairProgressImage.gameObject.SetActive(false);
+        }
+        else
+        {
+            bool useMinigame = repairMinigameUI != null;
+            if (useMinigame && _interactAction != null && _interactAction.triggered)
+            {
+                ComputerSpot spot = _currentSpot;
+                int code = Random.Range(100, 1000);
+                if (repairMinigameUI == null)
+                    repairMinigameUI = FindFirstObjectByType<RepairMinigameUI>();
+                if (repairMinigameUI != null)
+                    repairMinigameUI.Open(code, () => { if (spot != null) spot.CompleteRepair(); }, null);
+            }
+            else if (!useMinigame)
+            {
+                if (IsKeyHeld(KeyCode.E))
+                {
+                    _repairProgress += Time.deltaTime;
+                    if (repairProgressImage != null)
+                    {
+                        repairProgressImage.gameObject.SetActive(true);
+                        repairProgressImage.fillAmount = Mathf.Clamp01(_repairProgress / repairHoldDurationSeconds);
+                    }
+                    if (_repairProgress >= repairHoldDurationSeconds)
+                    {
+                        _currentSpot.CompleteRepair();
+                        _repairProgress = 0f;
+                        if (repairProgressImage != null)
+                            repairProgressImage.gameObject.SetActive(false);
+                    }
+                }
+                else
+                {
+                    _repairProgress = 0f;
+                    if (repairProgressImage != null)
+                    {
+                        repairProgressImage.gameObject.SetActive(false);
+                        repairProgressImage.fillAmount = 0f;
+                    }
+                }
             }
         }
 
@@ -365,13 +522,23 @@ public class PlayerInteract : MonoBehaviour
             _keyPrevPressed[KeyCode.R] = IsKeyHeld(KeyCode.R);
         }
 
-        if (_interactAction != null && _interactAction.triggered)
+        if (_interactAction != null && _interactAction.triggered && !RepairMinigameUI.IsActive)
         {
-            // E при наведении на принятого клиента — отправить без голоса
             if (_currentClient == _clientWaitingToSeat && _clientWaitingToSeat != null &&
                 (_voiceRecordState == VoiceRecordState.Idle || _voiceRecordState == VoiceRecordState.HasRecording))
             {
                 SendClientWithoutVoice();
+                return;
+            }
+
+            if (thirstyClient != null && PlayerCarry.Instance != null && PlayerCarry.Instance.HasDrink)
+            {
+                thirstyClient.OnReceiveDrink();
+                return;
+            }
+            if (_currentDrinkStock != null && PlayerCarry.Instance != null && !PlayerCarry.Instance.HasDrink && _currentDrinkStock.TryTakeDrink(PlayerCarry.Instance.HasDrink))
+            {
+                PlayerCarry.Instance.TakeDrink();
                 return;
             }
 
@@ -392,7 +559,7 @@ public class PlayerInteract : MonoBehaviour
             {
                 _currentMonitor.BeginViewing();
             }
-            else if (_currentSpot != null && !_currentSpot.IsOccupied && _clientWaitingToSeat != null && _clientWaitingToSeat.AssignedSpot == _currentSpot)
+            else if (_currentSpot != null && !_currentSpot.IsOccupied && !_currentSpot.IsBroken && _clientWaitingToSeat != null && _clientWaitingToSeat.AssignedSpot == _currentSpot)
             {
                 if (_currentSpot.SeatClient(_clientWaitingToSeat))
                 {

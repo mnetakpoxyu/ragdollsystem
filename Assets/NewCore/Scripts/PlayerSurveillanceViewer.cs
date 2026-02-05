@@ -19,13 +19,13 @@ public class PlayerSurveillanceViewer : MonoBehaviour
     [Tooltip("Шрифт для overlay. Если пусто — используется встроенный.")]
     [SerializeField] Font overlayFont;
 
-    [Header("Управление")]
+    [Header("Управление (по умолчанию, если монитор не задаёт свои)")]
     [Tooltip("Клавиша предыдущей камеры. None — отключено.")]
-    [SerializeField] KeyCode prevKey = KeyCode.None;
-    [Tooltip("Клавиша следующей камеры (отображается в подсказке на экране). По умолчанию Q.")]
-    [SerializeField] KeyCode nextKey = KeyCode.Q;
-    [Tooltip("Клавиша выхода из видеонаблюдения. По умолчанию Escape.")]
-    [SerializeField] KeyCode exitKey = KeyCode.Escape;
+    [SerializeField] KeyCode prevKey = KeyCode.Q;
+    [Tooltip("Клавиша следующей камеры.")]
+    [SerializeField] KeyCode nextKey = KeyCode.E;
+    [Tooltip("Клавиша выхода из видеонаблюдения.")]
+    [SerializeField] KeyCode exitKey = KeyCode.R;
 
     [Header("Плавность движения камеры")]
     [SerializeField, Range(1f, 20f)] float positionLerpSpeed = 12f;
@@ -52,8 +52,13 @@ public class PlayerSurveillanceViewer : MonoBehaviour
     bool _pendingCursorRestore;
     int _forceCursorHiddenFrames;
 
+    InputAction _actionPrevCamera;
     InputAction _actionNextCamera;
     InputAction _actionExit;
+    KeyCode _effectivePrevKey;
+    KeyCode _effectiveNextKey;
+    KeyCode _effectiveExitKey;
+    int _ignoreSwitchInputFrames;
 
     void Awake()
     {
@@ -77,6 +82,7 @@ public class PlayerSurveillanceViewer : MonoBehaviour
 
     void OnDestroy()
     {
+        _actionPrevCamera?.Dispose();
         _actionNextCamera?.Dispose();
         _actionExit?.Dispose();
         if (Instance == this)
@@ -86,8 +92,29 @@ public class PlayerSurveillanceViewer : MonoBehaviour
     void EnsureSurveillanceActions()
     {
         if (_actionNextCamera != null) return;
-        _actionNextCamera = new InputAction(type: InputActionType.Button, binding: GetBindingPath(nextKey));
-        _actionExit = new InputAction(type: InputActionType.Button, binding: GetBindingPath(exitKey));
+
+        KeyCode prev = _activeMonitor != null ? _activeMonitor.PrevCameraKey : prevKey;
+        KeyCode next = _activeMonitor != null ? _activeMonitor.NextCameraKey : nextKey;
+        KeyCode exit = _activeMonitor != null ? _activeMonitor.ExitKey : exitKey;
+
+        _effectivePrevKey = prev;
+        _effectiveNextKey = next;
+        _effectiveExitKey = exit;
+
+        if (prev != KeyCode.None)
+            _actionPrevCamera = new InputAction(type: InputActionType.Button, binding: GetBindingPath(prev));
+        _actionNextCamera = new InputAction(type: InputActionType.Button, binding: GetBindingPath(next));
+        _actionExit = new InputAction(type: InputActionType.Button, binding: GetBindingPath(exit));
+    }
+
+    void ClearSurveillanceActions()
+    {
+        _actionPrevCamera?.Dispose();
+        _actionPrevCamera = null;
+        _actionNextCamera?.Dispose();
+        _actionNextCamera = null;
+        _actionExit?.Dispose();
+        _actionExit = null;
     }
 
     static string GetBindingPath(KeyCode key)
@@ -117,13 +144,21 @@ public class PlayerSurveillanceViewer : MonoBehaviour
             ExitSurveillance();
             return;
         }
+        if (_ignoreSwitchInputFrames > 0)
+        {
+            _ignoreSwitchInputFrames--;
+            return;
+        }
+        if (_actionPrevCamera != null && _actionPrevCamera.triggered)
+        {
+            MoveToCamera(_currentIndex - 1);
+            return;
+        }
         if (_actionNextCamera.triggered)
         {
             MoveToCamera(_currentIndex + 1);
             return;
         }
-        if (prevKey != KeyCode.None && WasKeyPressed(prevKey))
-            MoveToCamera(_currentIndex - 1);
 
         if (_isActive && Cursor.lockState != CursorLockMode.Locked)
             ExitSurveillance();
@@ -163,12 +198,9 @@ public class PlayerSurveillanceViewer : MonoBehaviour
         }
 
         if (_activeMonitor != monitor)
-        {
-            _currentIndex = 0;
             _activeMonitor = monitor;
-        }
 
-            if (!_isActive)
+        if (!_isActive)
         {
             CacheOriginalTransform();
             _isActive = true;
@@ -184,11 +216,18 @@ public class PlayerSurveillanceViewer : MonoBehaviour
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
             SetOverlayVisible(true);
+            ClearSurveillanceActions();
             EnsureSurveillanceActions();
+            _actionPrevCamera?.Enable();
             _actionNextCamera?.Enable();
             _actionExit?.Enable();
+            _actionPrevCamera?.Reset();
+            _actionNextCamera?.Reset();
+            _actionExit?.Reset();
+            _ignoreSwitchInputFrames = 2;
         }
 
+        _currentIndex = 0;
         UpdateTargetFromSlot();
         UpdateOverlayText();
     }
@@ -205,8 +244,7 @@ public class PlayerSurveillanceViewer : MonoBehaviour
         RestoreOriginalTransform();
         RestorePlayerController();
         SetOverlayVisible(false);
-        _actionNextCamera?.Disable();
-        _actionExit?.Disable();
+        ClearSurveillanceActions();
 
         Cursor.lockState = _prevCursorLockMode;
         Cursor.visible = _prevCursorVisible;
@@ -284,9 +322,10 @@ public class PlayerSurveillanceViewer : MonoBehaviour
     {
         if (overlayText == null || _activeMonitor == null) return;
 
-        string nextText = nextKey != KeyCode.None ? $"{nextKey} — следующая камера" : "";
-        string exitText = exitKey != KeyCode.None ? $"{exitKey} — выйти" : "";
-        string instructions = string.Join("    ", new[] { nextText, exitText }.Where(s => !string.IsNullOrEmpty(s)));
+        string prevText = _effectivePrevKey != KeyCode.None ? $"{_effectivePrevKey} — предыдущая" : "";
+        string nextText = _effectiveNextKey != KeyCode.None ? $"{_effectiveNextKey} — следующая" : "";
+        string exitText = _effectiveExitKey != KeyCode.None ? $"{_effectiveExitKey} — выйти" : "";
+        string instructions = string.Join("    ", new[] { prevText, nextText, exitText }.Where(s => !string.IsNullOrEmpty(s)));
         overlayText.text = $"{_activeMonitor.DisplayName} — {_activeMonitor.GetCameraLabel(_currentIndex)}\n{instructions}";
     }
 

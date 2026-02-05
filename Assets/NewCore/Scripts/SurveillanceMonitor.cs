@@ -49,9 +49,20 @@ public class SurveillanceMonitor : MonoBehaviour
     [Tooltip("Слоты, заданные вручную компонентами (если autoCollectChildSlots отключён).")]
     [SerializeField] SurveillanceCameraSlot[] cameraSlots;
 
+    [Header("Управление")]
+    [Tooltip("Клавиша предыдущей камеры.")]
+    [SerializeField] KeyCode prevCameraKey = KeyCode.Q;
+    [Tooltip("Клавиша следующей камеры.")]
+    [SerializeField] KeyCode nextCameraKey = KeyCode.E;
+    [Tooltip("Клавиша выхода из видеонаблюдения.")]
+    [SerializeField] KeyCode exitKey = KeyCode.R;
+
     readonly System.Collections.Generic.List<CameraView> _views = new System.Collections.Generic.List<CameraView>(8);
 
     public string DisplayName => displayName;
+    public KeyCode PrevCameraKey => prevCameraKey;
+    public KeyCode NextCameraKey => nextCameraKey;
+    public KeyCode ExitKey => exitKey;
     public int CameraCount => _views.Count;
 
     void Awake()

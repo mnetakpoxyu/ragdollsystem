@@ -73,6 +73,26 @@ public class PlayerHQDVape : MonoBehaviour
     [Tooltip("Случайный разброс количества частиц при каждом выдохе (0 = одинаково, 0.2 = ±20%).")]
     [SerializeField, Range(0f, 0.4f)] float vaporCountRandomness = 0.18f;
 
+    [Header("Трюк: колечко (O‑ring)")]
+    [Tooltip("Шанс при выдохе выдуть пар кольцом вместо облака (0 = никогда, 1 = всегда).")]
+    [SerializeField, Range(0f, 1f)] float ringTrickChance = 0.3f;
+    [Tooltip("Начальный радиус кольца (м) — размер «дырки» в момент выдоха.")]
+    [SerializeField] float ringStartRadius = 0.035f;
+    [Tooltip("Толщина кольца: разброс радиуса частиц (0 = тонкая линия, 0.02 = пухлое кольцо).")]
+    [SerializeField, Min(0f)] float ringThickness = 0.008f;
+    [Tooltip("Скорость полёта кольца вперёд по направлению взгляда (м/с).")]
+    [SerializeField] float ringForwardSpeed = 1.4f;
+    [Tooltip("Скорость расширения кольца — как быстро «дырка» увеличивается (м/с).")]
+    [SerializeField] float ringExpandSpeed = 0.7f;
+    [Tooltip("Замедление кольца со временем (0 = не замедляется, 0.5 = к концу жизни ~50% скорости).")]
+    [SerializeField, Range(0f, 0.95f)] float ringDrag = 0.35f;
+    [Tooltip("Количество частиц по контуру кольца (меньше = меньше нагрузка, 48–64 обычно хватает).")]
+    [SerializeField, Min(24)] int ringParticleCount = 52;
+    [Tooltip("Размер одной частицы — при малом количестве частиц можно увеличить для плотного кольца.")]
+    [SerializeField, Min(0.01f)] float ringParticleSize = 0.24f;
+    [Tooltip("Время жизни кольца (сек), затем плавно исчезает.")]
+    [SerializeField, Min(0.5f)] float ringLifetime = 2.2f;
+
     [Header("Звуки")]
     [Tooltip("Звук работающего испарителя. Циклится, пока удерживаешь V; плавно стартует и останавливается при отпускании.")]
     [SerializeField] AudioClip evaporatorSound;
@@ -112,22 +132,51 @@ public class PlayerHQDVape : MonoBehaviour
         SetupInput();
     }
 
+    const string EvaporatorAudioChildName = "HQDVape_EvaporatorAudio";
+    const string ExhaleAudioChildName = "HQDVape_ExhaleAudio";
+
     void EnsureEvaporatorAudioSource()
     {
-        AudioSource[] sources = GetComponents<AudioSource>();
-        _evaporatorSource = sources.Length > 0 ? sources[0] : gameObject.AddComponent<AudioSource>();
+        if (_evaporatorSource != null && _exhaleSource != null) return;
+
+        Transform t = transform;
+        Transform evapChild = null;
+        Transform exhaleChild = null;
+        for (int i = 0; i < t.childCount; i++)
+        {
+            var c = t.GetChild(i);
+            if (c.name == EvaporatorAudioChildName) evapChild = c;
+            else if (c.name == ExhaleAudioChildName) exhaleChild = c;
+        }
+
+        if (evapChild == null)
+        {
+            var go = new GameObject(EvaporatorAudioChildName);
+            go.transform.SetParent(t, false);
+            go.transform.localPosition = Vector3.zero;
+            _evaporatorSource = go.AddComponent<AudioSource>();
+        }
+        else
+            _evaporatorSource = evapChild.GetComponent<AudioSource>() ?? evapChild.gameObject.AddComponent<AudioSource>();
+
+        if (exhaleChild == null)
+        {
+            var go = new GameObject(ExhaleAudioChildName);
+            go.transform.SetParent(t, false);
+            go.transform.localPosition = Vector3.zero;
+            _exhaleSource = go.AddComponent<AudioSource>();
+        }
+        else
+            _exhaleSource = exhaleChild.GetComponent<AudioSource>() ?? exhaleChild.gameObject.AddComponent<AudioSource>();
+
         _evaporatorSource.playOnAwake = false;
         _evaporatorSource.loop = true;
+        _evaporatorSource.spatialBlend = 0f;
         _evaporatorSource.Stop();
 
-        if (sources.Length > 1)
-            _exhaleSource = sources[1];
-        else
-        {
-            _exhaleSource = gameObject.AddComponent<AudioSource>();
-            _exhaleSource.playOnAwake = false;
-            _exhaleSource.loop = false;
-        }
+        _exhaleSource.playOnAwake = false;
+        _exhaleSource.loop = false;
+        _exhaleSource.spatialBlend = 0f;
     }
 
     void EnsureHQD()
@@ -452,7 +501,11 @@ public class PlayerHQDVape : MonoBehaviour
     IEnumerator PlayVaporAfterHide(float holdDuration)
     {
         yield return new WaitForSeconds(hideDuration);
-        PlayVapor(holdDuration);
+        bool doRingTrick = ringTrickChance > 0f && Random.value < ringTrickChance;
+        if (doRingTrick)
+            PlayVaporRing(holdDuration);
+        else
+            PlayVapor(holdDuration);
     }
 
     void UpdateAnimation()
@@ -497,6 +550,7 @@ public class PlayerHQDVape : MonoBehaviour
         Vector3 worldMouth = playerCamera.TransformPoint(visibleLocalPosition + vaporLocalOffset);
         Quaternion forwardRotation = playerCamera.rotation;
 
+        // Обычное облако — с родителем, следует за игроком
         Transform vaporParent = vaporWorldParent != null ? vaporWorldParent : playerCamera;
         GameObject clone = Instantiate(_vaporInstance.gameObject, vaporParent);
         clone.SetActive(true);
@@ -530,6 +584,125 @@ public class PlayerHQDVape : MonoBehaviour
 
         ps.Play();
         Destroy(clone, 5.5f);
+    }
+
+    void PlayVaporRing(float holdDuration)
+    {
+        Vector3 worldMouth = playerCamera.TransformPoint(visibleLocalPosition + vaporLocalOffset);
+        Quaternion forwardRotation = playerCamera.rotation;
+        Vector3 worldForward = forwardRotation * Vector3.forward;
+
+        // Объект в мире без родителя — кольцо летит вперёд по взгляду и расширяется
+        GameObject ringGo = new GameObject("VaporRing");
+        ringGo.transform.SetParent(null);
+        ringGo.transform.position = worldMouth;
+        ringGo.transform.rotation = forwardRotation;
+
+        ParticleSystem ps = ringGo.AddComponent<ParticleSystem>();
+        var main = ps.main;
+        main.duration = 1f;
+        main.loop = false;
+        main.startLifetime = ringLifetime;
+        main.startSpeed = 0f;           // скорость задаём вручную у каждой частицы
+        main.startSize = ringParticleSize;
+        main.startColor = vaporColor;
+        main.simulationSpace = ParticleSystemSimulationSpace.World;
+        main.maxParticles = ringParticleCount;
+        main.gravityModifier = 0f;
+        main.playOnAwake = false;
+
+        var emission = ps.emission;
+        emission.enabled = false;
+
+        var shape = ps.shape;
+        shape.enabled = false;
+
+        // Замедление вперёд по времени (имитация сопротивления воздуха) — в локальном пространстве кольца
+        var vel = ps.velocityOverLifetime;
+        vel.enabled = true;
+        vel.space = ParticleSystemSimulationSpace.Local;
+        vel.x = 0f;
+        vel.y = 0f;
+        vel.z = new ParticleSystem.MinMaxCurve(1f, new AnimationCurve(
+            new Keyframe(0f, 0f),
+            new Keyframe(1f, -ringForwardSpeed * ringDrag)));
+
+        // Размер: появление → лёгкий рост → плавное исчезновение
+        var sizeOverLifetime = ps.sizeOverLifetime;
+        sizeOverLifetime.enabled = true;
+        sizeOverLifetime.size = new ParticleSystem.MinMaxCurve(1f, new AnimationCurve(
+            new Keyframe(0f, 0.3f),
+            new Keyframe(0.08f, 1f),
+            new Keyframe(0.5f, 1.1f),
+            new Keyframe(0.85f, 0.5f),
+            new Keyframe(1f, 0f)));
+
+        var colorOverLifetime = ps.colorOverLifetime;
+        colorOverLifetime.enabled = true;
+        Color c = vaporColor;
+        var grad = new Gradient();
+        grad.SetKeys(
+            new[] { new GradientColorKey(c, 0f), new GradientColorKey(c, 1f) },
+            new[] {
+                new GradientAlphaKey(c.a * 0.95f, 0f),
+                new GradientAlphaKey(c.a * 0.7f, 0.25f),
+                new GradientAlphaKey(c.a * 0.4f, 0.6f),
+                new GradientAlphaKey(0f, 1f)
+            });
+        colorOverLifetime.color = grad;
+
+        // Лёгкий шум, чтобы кольцо не выглядело как жёсткий диск
+        var noise = ps.noise;
+        noise.enabled = true;
+        noise.strength = 0.06f;
+        noise.frequency = 0.4f;
+        noise.scrollSpeed = 0.08f;
+        noise.damping = true;
+        noise.octaveCount = 2;
+        noise.quality = ParticleSystemNoiseQuality.Low;
+
+        var renderer = ringGo.GetComponent<ParticleSystemRenderer>();
+        if (renderer != null)
+            SetupVaporRenderer(renderer, vaporColor);
+
+        // Расставляем частицы по окружности (ограничено для отсутствия лага при появлении)
+        int count = Mathf.Clamp(ringParticleCount, 24, 100);
+        var particles = new ParticleSystem.Particle[count];
+        float invCount = 1f / count;
+
+        for (int i = 0; i < count; i++)
+        {
+            float t = i * invCount * Mathf.PI * 2f;
+            float angle = t + Random.Range(-0.015f, 0.015f);
+            float r = ringStartRadius + Random.Range(-ringThickness, ringThickness);
+            r = Mathf.Max(0.001f, r);
+
+            // Локальная позиция на кольце: круг в плоскости XY (вперёд — Z)
+            Vector3 localPos = new Vector3(Mathf.Cos(angle) * r, Mathf.Sin(angle) * r, 0f);
+            Vector3 worldPos = worldMouth + forwardRotation * localPos;
+
+            // Направление «наружу» от центра кольца в плоскости кольца
+            Vector3 localOutward = new Vector3(Mathf.Cos(angle), Mathf.Sin(angle), 0f);
+            Vector3 worldOutward = forwardRotation * localOutward;
+
+            // Скорость: вперёд по взгляду + расширение кольца наружу
+            Vector3 velocity = worldForward * ringForwardSpeed + worldOutward * ringExpandSpeed;
+
+            var p = particles[i];
+            p.position = worldPos;
+            p.velocity = velocity;
+            p.startLifetime = ringLifetime;
+            p.remainingLifetime = ringLifetime;
+            p.startSize = ringParticleSize * Random.Range(0.85f, 1.15f);
+            p.startColor = vaporColor;
+            p.rotation = Random.Range(0f, Mathf.PI * 2f);
+            p.randomSeed = (uint)(i + 1);
+            particles[i] = p;
+        }
+
+        ps.SetParticles(particles, count);
+        ps.Play();
+        Destroy(ringGo, ringLifetime + 1.5f);
     }
 
     void ApplyVaporForwardExhale(ParticleSystem ps)
