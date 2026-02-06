@@ -20,7 +20,9 @@ public class ClientNPC : MonoBehaviour
         WalkingToCounterForDrink,
         WaitingForDrink,
         WalkingToCounterForFood,
-        WaitingForFood
+        WaitingForFood,
+        WalkingToCounterForHookah,
+        WaitingForHookah
     }
 
     [Header("Точка назначения")]
@@ -91,6 +93,20 @@ public class ClientNPC : MonoBehaviour
     [Tooltip("Проверять желание поесть каждые N реальных секунд.")]
     [SerializeField] float wantFoodCheckInterval = 6f;
 
+    [Header("Кальян (рандом за сессию)")]
+    [Tooltip("Вероятность, что NPC захочет покурить кальян за сессию (0–1). Только один NPC одновременно может идти за кальяном.")]
+    [SerializeField, Range(0f, 1f)] float wantHookahChancePerSession = 0.3f;
+    [Tooltip("Минимальное время в реальных секундах, что NPC должен посидеть, прежде чем может захотеть кальян.")]
+    [SerializeField] float wantHookahMinRealSeconds = 25f;
+    [Tooltip("Проверять желание кальяна каждые N реальных секунд.")]
+    [SerializeField] float wantHookahCheckInterval = 7f;
+    [Tooltip("Префаб пара/дыма изо рта (как от вейпа). Пусто — создаётся простой дым в коде.")]
+    [SerializeField] ParticleSystem hookahSmokePrefab;
+    [Tooltip("Смещение «рта» для дыма относительно pivot NPC (высота, вперёд).")]
+    [SerializeField] Vector3 mouthOffset = new Vector3(0f, 1.1f, 0.15f);
+    [Tooltip("Интервал между «затяжками» дыма (сек). Случайный выбор в этом диапазоне — чаще и разнообразнее.")]
+    [SerializeField] Vector2 hookahSmokeInterval = new Vector2(0.8f, 2.2f);
+
     NavMeshAgent _agent;
     Animator _anim;
     State _state = State.WaitingAtDoor;
@@ -121,11 +137,18 @@ public class ClientNPC : MonoBehaviour
     bool _foodRolled;
     float _lastFoodCheckTime = -1f;
     static ClientNPC _currentHungryNpc;
+    bool _hookahRolled;
+    float _lastHookahCheckTime = -1f;
+    static ClientNPC _currentHookahNpc;
+    bool _isSmokingHookah;
+    float _nextHookahSmokeTime;
+    ParticleSystem _hookahSmokeInstance;
 
     public static ClientNPC CurrentThirstyNpc => _currentThirstyNpc;
     public static ClientNPC CurrentHungryNpc => _currentHungryNpc;
+    public static ClientNPC CurrentHookahNpc => _currentHookahNpc;
 
-    /// <summary> Сколько NPC сейчас идут к стойке, ждут у стойки, ждут напиток или еду. Спавнер не спавнит второго, пока стойка «занята». </summary>
+    /// <summary> Сколько NPC сейчас идут к стойке, ждут у стойки, ждут напиток, еду или кальян. Спавнер не спавнит второго, пока стойка «занята». </summary>
     public static int CountGoingToOrAtCounter()
     {
         int count = 0;
@@ -135,7 +158,8 @@ public class ClientNPC : MonoBehaviour
             var s = all[i].CurrentState;
             if (s == State.WalkingToCounter || s == State.WaitingAtCounter ||
                 s == State.WalkingToCounterForDrink || s == State.WaitingForDrink ||
-                s == State.WalkingToCounterForFood || s == State.WaitingForFood)
+                s == State.WalkingToCounterForFood || s == State.WaitingForFood ||
+                s == State.WalkingToCounterForHookah || s == State.WaitingForHookah)
                 count++;
         }
         return count;
@@ -172,6 +196,8 @@ public class ClientNPC : MonoBehaviour
             _currentThirstyNpc = null;
         if (_currentHungryNpc == this)
             _currentHungryNpc = null;
+        if (_currentHookahNpc == this)
+            _currentHookahNpc = null;
     }
 
     void Start()
@@ -305,6 +331,17 @@ public class ClientNPC : MonoBehaviour
                 break;
             case State.WaitingForFood:
                 break;
+            case State.WalkingToCounterForHookah:
+                if (_agent != null && _agent.isOnNavMesh)
+                {
+                    if (!_agent.pathPending && _agent.remainingDistance <= arriveDistance)
+                        _state = State.WaitingForHookah;
+                    else if (stuckCheckInterval > 0f && Time.time - _lastStuckCheckTime >= stuckCheckInterval)
+                        TryUnstuck();
+                }
+                break;
+            case State.WaitingForHookah:
+                break;
             case State.WalkingToSeat:
                 if (_agent != null && _agent.isOnNavMesh)
                 {
@@ -337,9 +374,9 @@ public class ClientNPC : MonoBehaviour
                 if (_sitDownRealTime < 0f)
                     _sitDownRealTime = Time.time;
                 // Нельзя идти за напитком/едой, если уже сломался компьютер и ждём ремонт — только один ивент.
-                if (_assignedSpot != null && !_assignedSpot.IsClientGoneForDrink && !_assignedSpot.IsClientGoneForFood && !_assignedSpot.IsBreakdownInProgress)
+                if (_assignedSpot != null && !_assignedSpot.IsClientGoneForDrink && !_assignedSpot.IsClientGoneForFood && !_assignedSpot.IsClientGoneForHookah && !_assignedSpot.IsBreakdownInProgress)
                 {
-                    if (!_drinkRolled && _currentThirstyNpc == null && _currentHungryNpc == null)
+                    if (!_drinkRolled && _currentThirstyNpc == null && _currentHungryNpc == null && _currentHookahNpc == null)
                     {
                         float satFor = Time.time - _sitDownRealTime;
                         if (satFor >= wantDrinkMinRealSeconds && (Time.time - _lastDrinkCheckTime) >= wantDrinkCheckInterval)
@@ -352,7 +389,7 @@ public class ClientNPC : MonoBehaviour
                             }
                         }
                     }
-                    if (!_foodRolled && _currentThirstyNpc == null && _currentHungryNpc == null)
+                    if (!_foodRolled && _currentThirstyNpc == null && _currentHungryNpc == null && _currentHookahNpc == null)
                     {
                         float satFor = Time.time - _sitDownRealTime;
                         if (satFor >= wantFoodMinRealSeconds && (Time.time - _lastFoodCheckTime) >= wantFoodCheckInterval)
@@ -365,6 +402,24 @@ public class ClientNPC : MonoBehaviour
                             }
                         }
                     }
+                    if (!_hookahRolled && _currentThirstyNpc == null && _currentHungryNpc == null && _currentHookahNpc == null)
+                    {
+                        float satFor = Time.time - _sitDownRealTime;
+                        if (satFor >= wantHookahMinRealSeconds && (Time.time - _lastHookahCheckTime) >= wantHookahCheckInterval)
+                        {
+                            _lastHookahCheckTime = Time.time;
+                            if (Random.value < wantHookahChancePerSession)
+                            {
+                                _hookahRolled = true;
+                                RequestHookah();
+                            }
+                        }
+                    }
+                }
+                if (_isSmokingHookah && Time.time >= _nextHookahSmokeTime)
+                {
+                    _nextHookahSmokeTime = Time.time + Random.Range(hookahSmokeInterval.x, hookahSmokeInterval.y);
+                    EmitHookahSmoke();
                 }
                 // Воспроизводим реплики во время игровой сессии (по игровому времени)
                 bool isCurrentlyPlaying = _isPlayingPhrase || (_audioSource != null && _audioSource.isPlaying);
@@ -386,8 +441,8 @@ public class ClientNPC : MonoBehaviour
 
     void UpdateAnimator()
     {
-        bool walking = _state == State.WalkingToCounter || _state == State.WalkingToSeat || _state == State.WalkingToCounterForDrink || _state == State.WalkingToCounterForFood;
-        bool idle = _state == State.WaitingAtDoor || _state == State.WaitingAtCounter || _state == State.WaitingForDrink || _state == State.WaitingForFood;
+        bool walking = _state == State.WalkingToCounter || _state == State.WalkingToSeat || _state == State.WalkingToCounterForDrink || _state == State.WalkingToCounterForFood || _state == State.WalkingToCounterForHookah;
+        bool idle = _state == State.WaitingAtDoor || _state == State.WaitingAtCounter || _state == State.WaitingForDrink || _state == State.WaitingForFood || _state == State.WaitingForHookah;
         bool sitting = _state == State.SittingAtSeat;
 
         if (!string.IsNullOrEmpty(walkingParam)) _anim.SetBool(walkingParam, walking);
@@ -495,6 +550,12 @@ public class ClientNPC : MonoBehaviour
         wantFoodChancePerSession = other.wantFoodChancePerSession;
         wantFoodMinRealSeconds = other.wantFoodMinRealSeconds;
         wantFoodCheckInterval = other.wantFoodCheckInterval;
+        wantHookahChancePerSession = other.wantHookahChancePerSession;
+        wantHookahMinRealSeconds = other.wantHookahMinRealSeconds;
+        wantHookahCheckInterval = other.wantHookahCheckInterval;
+        hookahSmokePrefab = other.hookahSmokePrefab;
+        mouthOffset = other.mouthOffset;
+        hookahSmokeInterval = other.hookahSmokeInterval;
         // Заново взять агент и применить настройки (важно для спавненных префабов: агент мог быть null в Awake или добавлен позже)
         _agent = GetComponent<NavMeshAgent>();
         if (_agent != null)
@@ -545,8 +606,11 @@ public class ClientNPC : MonoBehaviour
         _gameTime = null;
         _drinkRolled = false;
         _foodRolled = false;
+        _hookahRolled = false;
         _lastDrinkCheckTime = -1f;
         _lastFoodCheckTime = -1f;
+        _lastHookahCheckTime = -1f;
+        _isSmokingHookah = false;
         _prevAnimState = (State)(-1);
         if (_anim != null)
         {
@@ -678,6 +742,155 @@ public class ClientNPC : MonoBehaviour
             PlayerCarry.Instance.GiveBurger();
         _currentHungryNpc = null;
         _assignedSpot?.OnFoodDelivered();
+    }
+
+    /// <summary> NPC захотел покурить кальян: встаёт, сессия на паузе, идёт к стойке. </summary>
+    void RequestHookah()
+    {
+        if (_currentHookahNpc != null || _assignedSpot == null || _seatChair == null || counterTarget == null || _agent == null) return;
+        _currentHookahNpc = this;
+        _assignedSpot.PauseSessionForHookah(this);
+        _agent.enabled = true;
+        Vector3 standPos = _seatChair.position + _seatChair.forward * 0.5f;
+        transform.SetPositionAndRotation(standPos, _seatChair.rotation);
+        EnsureOnNavMesh();
+        if (_agent.isOnNavMesh)
+        {
+            _agent.SetDestination(counterTarget.position);
+            _state = State.WalkingToCounterForHookah;
+            _lastPositionForStuck = transform.position;
+            _lastStuckCheckTime = Time.time;
+        }
+        else
+        {
+            _currentHookahNpc = null;
+            _assignedSpot.ResumeSessionForHookah();
+        }
+    }
+
+    /// <summary> Игрок принял заказ кальяна (E): клиент платит, идёт на место. </summary>
+    public void OnAcceptHookahOrder()
+    {
+        if (_state != State.WaitingForHookah) return;
+        if (PlayerBalance.Instance != null && PlayerCarry.Instance != null)
+            PlayerBalance.Instance.Add(PlayerCarry.Instance.HookahPaymentAmount);
+        _assignedSpot?.OnHookahOrderAccepted(this);
+        GoSitAt(_seatChair, _seatSitPoint);
+        var spawner = UnityEngine.Object.FindFirstObjectByType<ClientNPCSpawner>();
+        spawner?.OnClientLeftCounter();
+    }
+
+    /// <summary> Игрок отказался от заказа кальяна (Q): клиент идёт обратно на место. </summary>
+    public void OnDeclineHookahOrder()
+    {
+        if (_state != State.WaitingForHookah) return;
+        _currentHookahNpc = null;
+        _assignedSpot?.ResumeSessionForHookah();
+        GoSitAt(_seatChair, _seatSitPoint);
+        var spawner = UnityEngine.Object.FindFirstObjectByType<ClientNPCSpawner>();
+        spawner?.OnClientLeftCounter();
+    }
+
+    /// <summary> Игрок принёс кальян к столу. NPC ставит, сессия возобновляется, изо рта периодически идёт дым. </summary>
+    public void OnReceiveHookah()
+    {
+        if (_state != State.SittingAtSeat) return;
+        if (PlayerCarry.Instance != null)
+            PlayerCarry.Instance.GiveHookah();
+        _currentHookahNpc = null;
+        _assignedSpot?.OnHookahDelivered();
+        _isSmokingHookah = true;
+        _nextHookahSmokeTime = Time.time + Random.Range(hookahSmokeInterval.x * 0.5f, hookahSmokeInterval.x);
+    }
+
+    void EmitHookahSmoke()
+    {
+        Transform mouthPoint = _assignedSpot != null ? _assignedSpot.HookahMouthPoint : null;
+        Vector3 mouthPos = mouthPoint != null ? mouthPoint.position : transform.TransformPoint(mouthOffset);
+        Quaternion mouthRot = mouthPoint != null ? mouthPoint.rotation : transform.rotation;
+        if (hookahSmokePrefab != null)
+        {
+            var go = Instantiate(hookahSmokePrefab.gameObject, mouthPos, mouthRot);
+            var ps = go.GetComponent<ParticleSystem>();
+            if (ps != null) ps.Play();
+            Destroy(go, 4f);
+            return;
+        }
+        if (_hookahSmokeInstance == null)
+            CreateHookahSmokeInstance();
+        if (_hookahSmokeInstance != null)
+        {
+            _hookahSmokeInstance.gameObject.SetActive(true);
+            _hookahSmokeInstance.Play();
+        }
+    }
+
+    void CreateHookahSmokeInstance()
+    {
+        var go = new GameObject("HookahSmoke");
+        Transform mouthPoint = _assignedSpot != null ? _assignedSpot.HookahMouthPoint : null;
+        if (mouthPoint != null)
+        {
+            go.transform.SetParent(mouthPoint);
+            go.transform.localPosition = Vector3.zero;
+            go.transform.localRotation = Quaternion.identity;
+            _assignedSpot.RegisterHookahSmoke(go);
+        }
+        else
+        {
+            go.transform.SetParent(transform);
+            go.transform.localPosition = mouthOffset;
+            go.transform.localRotation = Quaternion.identity;
+        }
+        _hookahSmokeInstance = go.AddComponent<ParticleSystem>();
+        var main = _hookahSmokeInstance.main;
+        main.duration = 2.8f;
+        main.loop = false;
+        main.startLifetime = 4f;
+        main.startSpeed = new ParticleSystem.MinMaxCurve(0.12f, 0.35f);
+        main.startSize = new ParticleSystem.MinMaxCurve(0.18f, 0.32f);
+        main.startColor = new Color(0.92f, 0.92f, 0.96f, 0.45f);
+        main.simulationSpace = ParticleSystemSimulationSpace.World;
+        main.maxParticles = 1200;
+        main.gravityModifier = 0.008f;
+        var emission = _hookahSmokeInstance.emission;
+        emission.enabled = true;
+        emission.rateOverTime = 85f;
+        emission.SetBursts(System.Array.Empty<ParticleSystem.Burst>());
+        var shape = _hookahSmokeInstance.shape;
+        shape.enabled = true;
+        shape.shapeType = ParticleSystemShapeType.Cone;
+        shape.angle = 8f;
+        shape.radius = 0.02f;
+        var vel = _hookahSmokeInstance.velocityOverLifetime;
+        vel.enabled = true;
+        vel.space = ParticleSystemSimulationSpace.Local;
+        vel.z = new ParticleSystem.MinMaxCurve(0.4f, 0.7f);
+        vel.x = new ParticleSystem.MinMaxCurve(-0.18f, 0.18f);
+        vel.y = new ParticleSystem.MinMaxCurve(-0.18f, 0.18f);
+        var noise = _hookahSmokeInstance.noise;
+        noise.enabled = true;
+        noise.strength = 0.35f;
+        noise.frequency = 0.4f;
+        noise.scrollSpeed = 0.2f;
+        noise.damping = true;
+        noise.octaveCount = 2;
+        noise.quality = ParticleSystemNoiseQuality.Medium;
+        var colorOverLifetime = _hookahSmokeInstance.colorOverLifetime;
+        colorOverLifetime.enabled = true;
+        var grad = new Gradient();
+        grad.SetKeys(
+            new[] { new GradientColorKey(Color.white, 0f), new GradientColorKey(Color.white, 1f) },
+            new[] { new GradientAlphaKey(0.4f, 0f), new GradientAlphaKey(0.2f, 0.4f), new GradientAlphaKey(0f, 1f) });
+        colorOverLifetime.color = grad;
+        var renderer = go.GetComponent<ParticleSystemRenderer>();
+        if (renderer != null)
+        {
+            renderer.material = new Material(Shader.Find("Legacy Shaders/Particles/Alpha Blended Premultiply") ?? Shader.Find("Particles/Standard Unlit"));
+            if (renderer.material.HasProperty("_Color")) renderer.material.SetColor("_Color", new Color(1f, 1f, 1f, 0.5f));
+            renderer.renderMode = ParticleSystemRenderMode.Billboard;
+        }
+        go.SetActive(false);
     }
 
     /// <summary>

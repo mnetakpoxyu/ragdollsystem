@@ -80,6 +80,12 @@ public class ComputerSpot : MonoBehaviour
     [SerializeField] string goneLabel = "Ушёл";
     [Tooltip("Текст над клиентом, когда он вернулся и ждёт доставку еды.")]
     [SerializeField] string waitingForFoodLabel = "Ждёт еду";
+    [Tooltip("Текст над клиентом, когда он вернулся и ждёт кальян.")]
+    [SerializeField] string waitingForHookahLabel = "Ждёт кальян";
+    [Tooltip("Пустой объект рядом со столом (например HookahPlace). Сюда ставится кальян при доставке — он будет виден рядом со столом.")]
+    [SerializeField] Transform hookahPlace;
+    [Tooltip("Пустой объект в месте «рта» клиента за этим столом. Дым кальяна идёт из этой точки. Поворот объекта задаёт направление дыма в горизонтальной плоскости.")]
+    [SerializeField] Transform hookahMouthPoint;
 
     static Shader _outlineShader;
     static Shader OutlineShader => _outlineShader != null ? _outlineShader : (_outlineShader = Shader.Find("NewCore/Outline Contour"));
@@ -206,6 +212,9 @@ public class ComputerSpot : MonoBehaviour
     Camera _mainCam;
     bool _clientGoneForFood;
     float _foodDeliveryTimeRemaining = -1f;
+    bool _clientGoneForHookah;
+    Transform _placedHookahVisual;
+    GameObject _registeredHookahSmoke;
 
     void Awake()
     {
@@ -298,7 +307,7 @@ public class ComputerSpot : MonoBehaviour
         if (!isOccupied || _seatedClient == null || gameTime == null) return;
 
         float elapsed = GetElapsedHours();
-        if (!_clientGoneForDrink && !_clientGoneForFood)
+        if (!_clientGoneForDrink && !_clientGoneForFood && !_clientGoneForHookah)
         {
             if (elapsed >= _sessionDurationHours)
             {
@@ -318,7 +327,7 @@ public class ComputerSpot : MonoBehaviour
         }
 
         // Надпись над местом: «Ушёл», «Ждёт еду» или таймер сессии
-        bool showLabel = _seatedClient.CurrentState == ClientNPC.State.SittingAtSeat || _clientGoneForDrink || _clientGoneForFood;
+        bool showLabel = _seatedClient.CurrentState == ClientNPC.State.SittingAtSeat || _clientGoneForDrink || _clientGoneForFood || _clientGoneForHookah;
         if (showLabel)
         {
             if (_timerCanvas == null)
@@ -339,6 +348,23 @@ public class ComputerSpot : MonoBehaviour
                     if (_seatedClient.CurrentState == ClientNPC.State.SittingAtSeat)
                     {
                         _timerText.text = waitingForFoodLabel;
+                        _timerText.fontSize = timerFontSize;
+                        _timerText.color = timerTextColor;
+                        labelPos = timerAnchor != null ? timerAnchor.position : _seatedClient.transform.position + Vector3.up * timerHeightOffset;
+                    }
+                    else
+                    {
+                        _timerText.text = goneLabel;
+                        _timerText.fontSize = timerFontSize;
+                        _timerText.color = timerTextColor;
+                        labelPos = GetSpotLabelPosition();
+                    }
+                }
+                else if (_clientGoneForHookah)
+                {
+                    if (_seatedClient.CurrentState == ClientNPC.State.SittingAtSeat)
+                    {
+                        _timerText.text = waitingForHookahLabel;
                         _timerText.fontSize = timerFontSize;
                         _timerText.color = timerTextColor;
                         labelPos = timerAnchor != null ? timerAnchor.position : _seatedClient.transform.position + Vector3.up * timerHeightOffset;
@@ -402,6 +428,7 @@ public class ComputerSpot : MonoBehaviour
     {
         DestroyTimer();
         _breakdownInProgress = false;
+        ClearPlacedHookah();
         // Оплата уже получена при взаимодействии E у стойки
         if (_seatedClient != null)
         {
@@ -420,6 +447,7 @@ public class ComputerSpot : MonoBehaviour
     {
         float refund = _seatedClient != null ? _seatedClient.PaymentAmount : 0f;
         DestroyTimer();
+        ClearPlacedHookah();
         if (_seatedClient != null)
             Destroy(_seatedClient.gameObject);
         _seatedClient = null;
@@ -487,12 +515,77 @@ public class ComputerSpot : MonoBehaviour
         _sessionDurationHours = _remainingSessionHours;
     }
 
+    /// <summary> Клиент ушёл за кальяном — ставим сессию на паузу. </summary>
+    public void PauseSessionForHookah(ClientNPC npc)
+    {
+        if (_seatedClient != npc || !isOccupied) return;
+        _clientGoneForHookah = true;
+        _remainingSessionHours = _sessionDurationHours - GetElapsedHours();
+        _remainingSessionHours = Mathf.Max(0.01f, _remainingSessionHours);
+    }
+
+    /// <summary> Игрок отказался от заказа кальяна (Q) — клиент возвращается, возобновляем сессию. </summary>
+    public void ResumeSessionForHookah()
+    {
+        if (!_clientGoneForHookah || gameTime == null) return;
+        _clientGoneForHookah = false;
+        _sessionStartTimeHours = gameTime.CurrentTimeHours;
+        _sessionDurationHours = _remainingSessionHours;
+    }
+
+    /// <summary> Игрок принял заказ кальяна (E): клиент пошёл на место. </summary>
+    public void OnHookahOrderAccepted(ClientNPC npc)
+    {
+        if (_seatedClient != npc || !_clientGoneForHookah) return;
+    }
+
+    /// <summary> Игрок принёс кальян к столу — возобновляем сессию. </summary>
+    public void OnHookahDelivered()
+    {
+        if (!_clientGoneForHookah || gameTime == null) return;
+        _clientGoneForHookah = false;
+        _sessionStartTimeHours = gameTime.CurrentTimeHours;
+        _sessionDurationHours = _remainingSessionHours;
+    }
+
+    /// <summary> Попытаться отдать кальян клиенту (игрок на столе с кальяном). Если задан Hookah Place — кальян ставится туда и виден рядом со столом. </summary>
+    public bool TryDeliverHookah()
+    {
+        if (!_clientGoneForHookah || _seatedClient == null) return false;
+        if (PlayerCarry.Instance == null || !PlayerCarry.Instance.HasHookah) return false;
+        if (hookahPlace != null)
+        {
+            _placedHookahVisual = PlayerCarry.Instance.GiveHookahTo(hookahPlace);
+        }
+        else
+        {
+            PlayerCarry.Instance.GiveHookah();
+        }
+        _seatedClient.OnReceiveHookah();
+        return true;
+    }
+
+    void ClearPlacedHookah()
+    {
+        if (_placedHookahVisual != null)
+        {
+            Destroy(_placedHookahVisual.gameObject);
+            _placedHookahVisual = null;
+        }
+        if (_registeredHookahSmoke != null)
+        {
+            Destroy(_registeredHookahSmoke);
+            _registeredHookahSmoke = null;
+        }
+    }
+
     /// <summary> Таймаут доставки еды: клиент уходит, возврат за сессию и бургер. </summary>
     void EndSessionDueToFoodTimeout()
     {
         float sessionRefund = _seatedClient != null ? _seatedClient.PaymentAmount : 0f;
         float burgerRefund = (PlayerCarry.Instance != null) ? PlayerCarry.Instance.BurgerPaymentAmount : 0f;
         DestroyTimer();
+        ClearPlacedHookah();
         if (_seatedClient != null)
             Destroy(_seatedClient.gameObject);
         _seatedClient = null;
@@ -594,7 +687,7 @@ public class ComputerSpot : MonoBehaviour
         Color c;
         if (isBroken || _breakdownInProgress)
             c = brokenOutlineColor;
-        else if (_clientGoneForFood)
+        else if (_clientGoneForFood || _clientGoneForHookah)
             c = waitingForFoodOutlineColor;
         else if (isOccupied)
             c = occupiedOutlineColor;
@@ -621,6 +714,17 @@ public class ComputerSpot : MonoBehaviour
     public bool IsClientGoneForDrink => _clientGoneForDrink;
     /// <summary> Клиент ждёт доставку еды — сессия на паузе. </summary>
     public bool IsClientGoneForFood => _clientGoneForFood;
+    /// <summary> Клиент ждёт доставку кальяна — сессия на паузе. </summary>
+    public bool IsClientGoneForHookah => _clientGoneForHookah;
+    /// <summary> Точка «рта» для дыма кальяна (пустой GameObject у стола). Если задана — дым идёт из неё. </summary>
+    public Transform HookahMouthPoint => hookahMouthPoint;
+
+    /// <summary> Вызывается клиентом, когда он создаёт дым кальяна под этой точкой рта (чтобы очистить при уходе клиента). </summary>
+    public void RegisterHookahSmoke(GameObject smokeObject)
+    {
+        _registeredHookahSmoke = smokeObject;
+    }
+
     /// <summary> Сейчас идёт поломка: клиент сидит, над головой таймер починки. Успел починить — клиент остаётся. </summary>
     public bool IsBreakdownInProgress => _breakdownInProgress;
 

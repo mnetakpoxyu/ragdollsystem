@@ -17,6 +17,10 @@ public class PlayerCarry : MonoBehaviour
     [Tooltip("Оплата за бургер (игрок получает при принятии заказа; при таймауте доставки эта сумма возвращается клиенту).")]
     [SerializeField] float burgerPaymentAmount = 80f;
 
+    [Header("Кальян")]
+    [Tooltip("Оплата за кальян (игрок получает при принятии заказа).")]
+    [SerializeField] float hookahPaymentAmount = 120f;
+
     [Header("Вид от первого лица")]
     [Tooltip("Визуал банки/напитка (префаб или объект на сцене). При взятии напитка переносится к камере и показывается перед лицом.")]
     [SerializeField] GameObject drinkVisualInHand;
@@ -34,9 +38,16 @@ public class PlayerCarry : MonoBehaviour
     [SerializeField] Vector3 burgerHoldLocalRotationEuler = new Vector3(10f, 0f, -15f);
     [Tooltip("Локальный масштаб бургера в руке.")]
     [SerializeField] Vector3 burgerHoldLocalScale = new Vector3(1f, 1f, 1f);
+    [Tooltip("Локальная позиция кальяна в руке относительно камеры.")]
+    [SerializeField] Vector3 hookahHoldLocalPosition = new Vector3(0.25f, -0.25f, 0.5f);
+    [Tooltip("Локальный поворот кальяна (Euler).")]
+    [SerializeField] Vector3 hookahHoldLocalRotationEuler = new Vector3(5f, 0f, -10f);
+    [Tooltip("Локальный масштаб кальяна в руке.")]
+    [SerializeField] Vector3 hookahHoldLocalScale = new Vector3(1f, 1f, 1f);
 
     bool _hasDrink;
     bool _hasBurger;
+    bool _hasHookah;
     /// <summary> Напиток со стойки (из массива DrinkStock): при сдаче клиенту скрывается; при «положить обратно» возвращается на полку. </summary>
     Transform _borrowedDrinkVisual;
     DrinkStock _borrowedDrinkStock;
@@ -53,6 +64,13 @@ public class PlayerCarry : MonoBehaviour
     Quaternion _borrowedBurgerLocalRot;
     Vector3 _borrowedBurgerLocalScale;
     Vector3 _borrowedBurgerWorldPos;
+    Transform _borrowedHookahVisual;
+    HookahStock _borrowedHookahStock;
+    Transform _borrowedHookahOriginalParent;
+    Vector3 _borrowedHookahLocalPos;
+    Quaternion _borrowedHookahLocalRot;
+    Vector3 _borrowedHookahLocalScale;
+    Vector3 _borrowedHookahWorldPos;
 
     void Awake()
     {
@@ -115,8 +133,12 @@ public class PlayerCarry : MonoBehaviour
     public float DrinkPaymentAmount => drinkPaymentAmount;
     public bool HasBurger => _hasBurger;
     public float BurgerPaymentAmount => burgerPaymentAmount;
+    public bool HasHookah => _hasHookah;
+    public float HookahPaymentAmount => hookahPaymentAmount;
     /// <summary> С какой полки взят бургер (для «положить обратно» только на ту же полку). </summary>
     public FoodStock TakenFromFoodStock => _borrowedFoodStock;
+    /// <summary> С какой полки взят кальян. </summary>
+    public HookahStock TakenFromHookahStock => _borrowedHookahStock;
     /// <summary> С какой полки взят напиток (для «положить обратно» только на ту же полку). </summary>
     public DrinkStock TakenFromDrinkStock => _borrowedDrinkStock;
 
@@ -301,5 +323,88 @@ public class PlayerCarry : MonoBehaviour
 
         if (burgerVisualInHand != null)
             burgerVisualInHand.SetActive(false);
+    }
+
+    /// <summary> Взять кальян. visualFromStock — объект с полки; fromStock — полка (для «положить обратно»). </summary>
+    public void TakeHookah(Transform visualFromStock = null, HookahStock fromStock = null)
+    {
+        _hasHookah = true;
+        _borrowedHookahVisual = null;
+        _borrowedHookahStock = null;
+
+        if (visualFromStock != null)
+        {
+            _borrowedHookahVisual = visualFromStock;
+            _borrowedHookahStock = fromStock;
+            _borrowedHookahOriginalParent = visualFromStock.parent;
+            _borrowedHookahLocalPos = visualFromStock.localPosition;
+            _borrowedHookahLocalRot = visualFromStock.localRotation;
+            _borrowedHookahLocalScale = visualFromStock.localScale;
+            _borrowedHookahWorldPos = visualFromStock.position;
+            ReparentHookahToCamera(visualFromStock);
+            visualFromStock.gameObject.SetActive(true);
+            return;
+        }
+    }
+
+    void ReparentHookahToCamera(Transform hookahTransform)
+    {
+        if (hookahTransform == null) return;
+        Camera cam = Camera.main;
+        if (cam == null) return;
+        hookahTransform.SetParent(cam.transform, false);
+        hookahTransform.localPosition = hookahHoldLocalPosition;
+        hookahTransform.localRotation = Quaternion.Euler(hookahHoldLocalRotationEuler);
+        hookahTransform.localScale = hookahHoldLocalScale;
+    }
+
+    /// <summary> Положить кальян обратно на полку (только на ту же, с которой взяли). </summary>
+    public bool PutHookahBack(HookahStock toStock)
+    {
+        if (!_hasHookah || _borrowedHookahVisual == null || toStock != _borrowedHookahStock) return false;
+        Transform visual = _borrowedHookahVisual;
+        visual.SetParent(toStock.transform);
+        visual.position = _borrowedHookahWorldPos;
+        visual.localRotation = _borrowedHookahLocalRot;
+        visual.localScale = _borrowedHookahLocalScale;
+        visual.gameObject.SetActive(true);
+        StartCoroutine(DisableCollisionTemporarily(visual.gameObject, 0.25f));
+        toStock.ReturnHookah();
+        _hasHookah = false;
+        _borrowedHookahVisual = null;
+        _borrowedHookahStock = null;
+        return true;
+    }
+
+    /// <summary> Отдать кальян клиенту — объект скрывается. </summary>
+    public void GiveHookah()
+    {
+        _hasHookah = false;
+        _borrowedHookahStock = null;
+        if (_borrowedHookahVisual != null)
+        {
+            _borrowedHookahVisual.gameObject.SetActive(false);
+            _borrowedHookahVisual = null;
+        }
+    }
+
+    /// <summary> Поставить кальян в точку у стола (HookahPlace). Возвращает объект кальяна, который теперь у места. Коллайдеры временно отключаются, чтобы не отталкивало игрока. </summary>
+    public Transform GiveHookahTo(Transform place)
+    {
+        if (!_hasHookah || _borrowedHookahVisual == null || place == null) return null;
+        Transform visual = _borrowedHookahVisual;
+        _hasHookah = false;
+        _borrowedHookahStock = null;
+        _borrowedHookahVisual = null;
+
+        Vector3 worldScale = visual.lossyScale;
+        visual.SetParent(place);
+        visual.localPosition = Vector3.zero;
+        visual.localRotation = Quaternion.identity;
+        if (place.lossyScale.x != 0f && place.lossyScale.y != 0f && place.lossyScale.z != 0f)
+            visual.localScale = new Vector3(worldScale.x / place.lossyScale.x, worldScale.y / place.lossyScale.y, worldScale.z / place.lossyScale.z);
+        visual.gameObject.SetActive(true);
+        StartCoroutine(DisableCollisionTemporarily(visual.gameObject, 0.25f));
+        return visual;
     }
 }
