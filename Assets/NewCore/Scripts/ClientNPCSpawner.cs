@@ -32,6 +32,26 @@ public class ClientNPCSpawner : MonoBehaviour
     [SerializeField] Transform adminSpot;
     [SerializeField] InteractableDoor[] doors;
 
+    [Header("Периодическая проверка (заполнение спотов)")]
+    [Tooltip("Интервал (сек) проверки: есть ли свободные места; если да — спавним NPC даже если кто-то уже у стойки. Решает проблему, когда после паузы/фриза споты пустые, а события не вызывались.")]
+    [SerializeField] float periodicSpawnCheckInterval = 3f;
+
+    float _nextSpawnCheckTime;
+
+    void Start()
+    {
+        _nextSpawnCheckTime = Time.time + Mathf.Max(0.5f, periodicSpawnCheckInterval * 0.5f);
+    }
+
+    void Update()
+    {
+        if (periodicSpawnCheckInterval <= 0f) return;
+        if (Time.time < _nextSpawnCheckTime) return;
+        _nextSpawnCheckTime = Time.time + periodicSpawnCheckInterval;
+        // Периодически пытаемся заполнить споты; forceFillSpots = true — спавним даже если кто-то у стойки (после фриза/сна все споты должны быть заняты).
+        TrySpawn(forceFillSpots: true);
+    }
+
     /// <summary>
     /// Вызвать, когда игрок посадил клиента за компьютер. Из PlayerInteract после SeatClient.
     /// </summary>
@@ -56,14 +76,26 @@ public class ClientNPCSpawner : MonoBehaviour
         TrySpawn();
     }
 
-    void TrySpawn()
+    /// <param name="forceFillSpots">Если true — спавним одного NPC при наличии свободного места даже когда кто-то уже идёт к стойке/ждёт у стойки (для быстрого заполнения после фриза/паузы).</param>
+    void TrySpawn(bool forceFillSpots = false)
     {
         if (npcPrefabs == null || npcPrefabs.Length == 0 || adminSpot == null) return;
         if (spawnPoints == null || spawnPoints.Length == 0) return;
-        // Спавним по одному: следующий только когда никто не идёт к стойке и не ждёт у стойки (посадили — тогда спавн следующего).
-        if (ClientNPC.CountGoingToOrAtCounter() > 0) return;
         // Есть ли место для нового клиента: свободное или сломанное (после починки можно посадить).
         if (ComputerSpot.GetRandomSpotForNewClient() == null) return;
+
+        int atCounter = ClientNPC.CountGoingToOrAtCounter();
+        int freeSpots = ComputerSpot.GetFreeSpotsList().Count;
+        // Обычный режим: только один NPC в очереди (идёт к стойке или ждёт у стойки).
+        if (!forceFillSpots)
+        {
+            if (atCounter > 0) return;
+        }
+        else
+        {
+            // Принудительное заполнение: не спавним лишних — в очереди не больше, чем свободных спотов (чтобы не было 8 NPC в простоях).
+            if (atCounter >= freeSpots) return;
+        }
 
         GameObject prefab = npcPrefabs[Random.Range(0, npcPrefabs.Length)];
         if (prefab == null) return;
