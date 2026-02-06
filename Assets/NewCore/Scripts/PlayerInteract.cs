@@ -56,6 +56,7 @@ public class PlayerInteract : MonoBehaviour
     SurveillanceMonitor _currentMonitor;
     BoomboxInteractable _currentBoombox;
     DrinkStock _currentDrinkStock;
+    FoodStock _currentFoodStock;
     VoiceRecorder _voiceRecorder;
     float _repairProgress;
     AudioSource _previewAudioSource;
@@ -273,6 +274,7 @@ public class PlayerInteract : MonoBehaviour
         BalanceDisplayTarget hitBalanceTarget = null;
         BoomboxInteractable hitBoombox = null;
         DrinkStock hitDrinkStock = null;
+        FoodStock hitFoodStock = null;
         _currentMonitor = null;
 
         Ray ray = _cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
@@ -290,11 +292,13 @@ public class PlayerInteract : MonoBehaviour
             hitBalanceTarget = hit.collider.GetComponentInParent<BalanceDisplayTarget>();
             hitBoombox = hit.collider.GetComponentInParent<BoomboxInteractable>();
             hitDrinkStock = hit.collider.GetComponent<DrinkStock>() ?? hit.collider.GetComponentInParent<DrinkStock>() ?? hit.collider.GetComponentInChildren<DrinkStock>();
+            hitFoodStock = hit.collider.GetComponent<FoodStock>() ?? hit.collider.GetComponentInParent<FoodStock>() ?? hit.collider.GetComponentInChildren<FoodStock>();
             _currentMonitor = monitor;
         }
 
         _currentBoombox = hitBoombox;
         _currentDrinkStock = hitDrinkStock;
+        _currentFoodStock = hitFoodStock;
 
         if (hitDoor != _currentDoor)
         {
@@ -330,11 +334,13 @@ public class PlayerInteract : MonoBehaviour
 
         // Клиент ждёт напиток (стоит у стойки)
         ClientNPC thirstyClient = (hitClient != null && hitClient.CurrentState == ClientNPC.State.WaitingForDrink) ? hitClient : null;
+        // Клиент ждёт решение по еде (стоит у стойки, подсказка «хочет есть»)
+        ClientNPC hungryClient = (hitClient != null && hitClient.CurrentState == ClientNPC.State.WaitingForFood) ? hitClient : null;
 
         bool showingVoiceHint = _clientWaitingToSeat != null && _currentClient == _clientWaitingToSeat &&
             (_voiceRecordState == VoiceRecordState.Idle || _voiceRecordState == VoiceRecordState.Recording || _voiceRecordState == VoiceRecordState.HasRecording);
 
-        bool showHint = _currentDoor != null || _currentClient != null || (thirstyClient != null && PlayerCarry.Instance != null && PlayerCarry.Instance.HasDrink) || _currentSpot != null || _currentMonitor != null || _currentBoombox != null || _currentDrinkStock != null || showingVoiceHint;
+        bool showHint = _currentDoor != null || _currentClient != null || (thirstyClient != null && PlayerCarry.Instance != null && PlayerCarry.Instance.HasDrink) || hungryClient != null || (_currentSpot != null && _currentSpot.IsClientGoneForFood && PlayerCarry.Instance != null && PlayerCarry.Instance.HasBurger) || _currentSpot != null || _currentMonitor != null || _currentBoombox != null || _currentDrinkStock != null || _currentFoodStock != null || showingVoiceHint;
         if (showHint && _currentSpot != null && (_currentSpot.IsBreakdownInProgress || _currentSpot.IsBroken) && RepairMinigameUI.IsActive)
             showHint = false;
         if (hintText != null)
@@ -360,7 +366,9 @@ public class PlayerInteract : MonoBehaviour
                 }
                 else if (_currentSpot != null)
                 {
-                    if (_currentSpot.IsBreakdownInProgress || _currentSpot.IsBroken)
+                    if (_currentSpot.IsClientGoneForFood && PlayerCarry.Instance != null && PlayerCarry.Instance.HasBurger)
+                        hintText.text = "Принести еду  [E]";
+                    else if (_currentSpot.IsBreakdownInProgress || _currentSpot.IsBroken)
                         hintText.text = (repairMinigameUI != null) ? HintRepairMinigame : HintRepair;
                     else if (!_currentSpot.IsOccupied && !_currentSpot.IsBroken && _clientWaitingToSeat != null && _clientWaitingToSeat.AssignedSpot == _currentSpot)
                         hintText.text = HintSeatClient;
@@ -377,7 +385,25 @@ public class PlayerInteract : MonoBehaviour
                 }
                 else if (_currentDrinkStock != null)
                 {
-                    hintText.text = string.Format("Газировка  [E] взять (в запасе: {0})", _currentDrinkStock.Stock);
+                    if (PlayerCarry.Instance != null && PlayerCarry.Instance.HasDrink && PlayerCarry.Instance.TakenFromDrinkStock == _currentDrinkStock)
+                        hintText.text = "Положить стаканчик  [E]";
+                    else if (PlayerCarry.Instance != null && PlayerCarry.Instance.HasBurger)
+                        hintText.text = "Сначала положите бургер";
+                    else
+                        hintText.text = string.Format("Газировка  [E] взять (в запасе: {0})", _currentDrinkStock.Stock);
+                }
+                else if (_currentFoodStock != null)
+                {
+                    if (PlayerCarry.Instance != null && PlayerCarry.Instance.HasBurger && PlayerCarry.Instance.TakenFromFoodStock == _currentFoodStock)
+                        hintText.text = "Положить бургер  [E]";
+                    else if (PlayerCarry.Instance != null && PlayerCarry.Instance.HasDrink)
+                        hintText.text = "Сначала положите стаканчик";
+                    else
+                        hintText.text = string.Format("Бургер  [E] взять (в запасе: {0})", _currentFoodStock.Stock);
+                }
+                else if (hungryClient != null)
+                {
+                    hintText.text = "Принять заказ  [E]   Отказаться  [Q]";
                 }
                 else if (_currentClient != null && _currentClient.CurrentState == ClientNPC.State.WaitingAtCounter && !_currentClient.HasOrdered && ComputerSpot.GetFreeSpotsList().Count == 0)
                 {
@@ -388,16 +414,19 @@ public class PlayerInteract : MonoBehaviour
             }
         }
 
-        // Задача сверху: клиент у стойки (часы/оплата) или клиент хочет попить
+        // Задача сверху: клиент у стойки (часы/оплата), клиент хочет попить или хочет поесть
         if (taskText != null)
         {
             bool showTaskOrder = _clientWaitingToSeat != null && _currentClient == _clientWaitingToSeat;
             bool showTaskThirsty = thirstyClient != null;
-            bool showTask = showTaskOrder || showTaskThirsty;
+            bool showTaskHungry = hungryClient != null;
+            bool showTask = showTaskOrder || showTaskThirsty || showTaskHungry;
             taskText.gameObject.SetActive(showTask);
             if (showTask)
             {
-                if (showTaskThirsty)
+                if (showTaskHungry)
+                    taskText.text = "Хочет есть";
+                else if (showTaskThirsty)
                     taskText.text = "Хочет попить";
                 else if (showTaskOrder && _clientWaitingToSeat != null && _clientWaitingToSeat.HasOrdered)
                 {
@@ -522,6 +551,13 @@ public class PlayerInteract : MonoBehaviour
             _keyPrevPressed[KeyCode.R] = IsKeyHeld(KeyCode.R);
         }
 
+        // Отказ от заказа еды по Q (отдельно от E)
+        if (hungryClient != null && WasKeyPressed(KeyCode.Q))
+        {
+            hungryClient.OnDeclineFoodOrder();
+            return;
+        }
+
         if (_interactAction != null && _interactAction.triggered && !RepairMinigameUI.IsActive)
         {
             if (_currentClient == _clientWaitingToSeat && _clientWaitingToSeat != null &&
@@ -536,9 +572,31 @@ public class PlayerInteract : MonoBehaviour
                 thirstyClient.OnReceiveDrink();
                 return;
             }
-            if (_currentDrinkStock != null && PlayerCarry.Instance != null && !PlayerCarry.Instance.HasDrink && _currentDrinkStock.TryTakeDrink(PlayerCarry.Instance.HasDrink))
+            if (_currentDrinkStock != null && PlayerCarry.Instance != null && PlayerCarry.Instance.HasDrink && PlayerCarry.Instance.TakenFromDrinkStock == _currentDrinkStock && PlayerCarry.Instance.PutDrinkBack(_currentDrinkStock))
             {
-                PlayerCarry.Instance.TakeDrink();
+                return;
+            }
+            if (hungryClient != null)
+            {
+                hungryClient.OnAcceptFoodOrder();
+                return;
+            }
+            if (_currentSpot != null && _currentSpot.IsClientGoneForFood && PlayerCarry.Instance != null && PlayerCarry.Instance.HasBurger && _currentSpot.TryDeliverFood())
+            {
+                return;
+            }
+            if (_currentDrinkStock != null && PlayerCarry.Instance != null && !PlayerCarry.Instance.HasDrink && !PlayerCarry.Instance.HasBurger && _currentDrinkStock.TryTakeDrink(PlayerCarry.Instance.HasDrink, out Transform drinkVisual))
+            {
+                PlayerCarry.Instance.TakeDrink(drinkVisual, _currentDrinkStock);
+                return;
+            }
+            if (_currentFoodStock != null && PlayerCarry.Instance != null && PlayerCarry.Instance.HasBurger && PlayerCarry.Instance.TakenFromFoodStock == _currentFoodStock && PlayerCarry.Instance.PutBurgerBack(_currentFoodStock))
+            {
+                return;
+            }
+            if (_currentFoodStock != null && PlayerCarry.Instance != null && !PlayerCarry.Instance.HasBurger && !PlayerCarry.Instance.HasDrink && _currentFoodStock.TryTakeBurger(PlayerCarry.Instance.HasBurger, out Transform burgerVisual))
+            {
+                PlayerCarry.Instance.TakeBurger(burgerVisual, _currentFoodStock);
                 return;
             }
 

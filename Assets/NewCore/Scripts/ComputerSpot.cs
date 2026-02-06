@@ -16,6 +16,8 @@ public class ComputerSpot : MonoBehaviour
     [SerializeField] Color outlineColor = new Color(0.15f, 1f, 0.4f, 1f);
     [Tooltip("Цвет обводки когда место занято.")]
     [SerializeField] Color occupiedOutlineColor = new Color(0.9f, 0.15f, 0.15f, 1f);
+    [Tooltip("Цвет обводки когда клиент ждёт доставку еды (не красный).")]
+    [SerializeField] Color waitingForFoodOutlineColor = new Color(1f, 0.85f, 0.2f, 1f);
     [Tooltip("Цвет обводки когда комп сломан (пустой или с клиентом ждёт починки).")]
     [SerializeField] Color brokenOutlineColor = new Color(1f, 0.5f, 0f, 1f);
     [Tooltip("Толщина обводки в метрах — ровная скорлупа вокруг стола.")]
@@ -70,6 +72,14 @@ public class ComputerSpot : MonoBehaviour
     [SerializeField] string breakdownLabel = "Ремонт";
     [Tooltip("Размер шрифта надписи «Ремонт» (таймер сессии использует Timer Font Size).")]
     [SerializeField] int breakdownFontSize = 18;
+
+    [Header("Доставка еды")]
+    [Tooltip("Сколько секунд (реального времени) у игрока на доставку еды клиенту. Не успел — клиент уходит, возврат за сессию и бургер.")]
+    [SerializeField] float foodDeliveryTimeLimitSeconds = 60f;
+    [Tooltip("Текст над местом, когда клиент ушёл (попить/поесть).")]
+    [SerializeField] string goneLabel = "Ушёл";
+    [Tooltip("Текст над клиентом, когда он вернулся и ждёт доставку еды.")]
+    [SerializeField] string waitingForFoodLabel = "Ждёт еду";
 
     static Shader _outlineShader;
     static Shader OutlineShader => _outlineShader != null ? _outlineShader : (_outlineShader = Shader.Find("NewCore/Outline Contour"));
@@ -194,6 +204,8 @@ public class ComputerSpot : MonoBehaviour
     Canvas _timerCanvas;
     Text _timerText;
     Camera _mainCam;
+    bool _clientGoneForFood;
+    float _foodDeliveryTimeRemaining = -1f;
 
     void Awake()
     {
@@ -272,41 +284,80 @@ public class ComputerSpot : MonoBehaviour
             }
         }
 
-        if (!isOccupied || _seatedClient == null || gameTime == null) return;
-        if (_clientGoneForDrink) return;
-
-        float elapsed = GetElapsedHours();
-        if (elapsed >= _sessionDurationHours)
+        // Доставка еды: таймер; истёк — клиент уходит, возврат за сессию и бургер.
+        if (_clientGoneForFood && _foodDeliveryTimeRemaining >= 0f)
         {
-            EndSession();
-            return;
-        }
-
-        // Случайная поломка за сессию (один раз за сессию, после минимальной доли сессии). Пока клиент за напитком — не ломаем.
-        if (!_breakdownRolled && !_clientGoneForDrink && _seatedClient.CurrentState == ClientNPC.State.SittingAtSeat && elapsed >= _sessionDurationHours * breakdownMinSessionElapsed)
-        {
-            _breakdownRolled = true;
-            if (Random.value < breakdownChancePerSession)
+            _foodDeliveryTimeRemaining -= Time.deltaTime;
+            if (_foodDeliveryTimeRemaining <= 0f)
             {
-                _breakdownInProgress = true;
-                _breakdownTimerRemaining = repairTimeLimitSeconds;
+                EndSessionDueToFoodTimeout();
+                return;
             }
         }
 
-        // Таймер только когда клиент уже сел за стол и не ушёл за напитком
-        if (_seatedClient.CurrentState == ClientNPC.State.SittingAtSeat && !_clientGoneForDrink)
+        if (!isOccupied || _seatedClient == null || gameTime == null) return;
+
+        float elapsed = GetElapsedHours();
+        if (!_clientGoneForDrink && !_clientGoneForFood)
+        {
+            if (elapsed >= _sessionDurationHours)
+            {
+                EndSession();
+                return;
+            }
+            // Случайная поломка за сессию. Пока клиент за напитком/едой — не ломаем.
+            if (!_breakdownRolled && _seatedClient.CurrentState == ClientNPC.State.SittingAtSeat && elapsed >= _sessionDurationHours * breakdownMinSessionElapsed)
+            {
+                _breakdownRolled = true;
+                if (Random.value < breakdownChancePerSession)
+                {
+                    _breakdownInProgress = true;
+                    _breakdownTimerRemaining = repairTimeLimitSeconds;
+                }
+            }
+        }
+
+        // Надпись над местом: «Ушёл», «Ждёт еду» или таймер сессии
+        bool showLabel = _seatedClient.CurrentState == ClientNPC.State.SittingAtSeat || _clientGoneForDrink || _clientGoneForFood;
+        if (showLabel)
         {
             if (_timerCanvas == null)
                 CreateTimerAboveClient();
 
             if (_timerCanvas != null && _timerText != null)
             {
-                if (_breakdownInProgress)
+                Vector3 labelPos;
+                if (_clientGoneForDrink)
+                {
+                    _timerText.text = goneLabel;
+                    _timerText.fontSize = timerFontSize;
+                    _timerText.color = timerTextColor;
+                    labelPos = GetSpotLabelPosition();
+                }
+                else if (_clientGoneForFood)
+                {
+                    if (_seatedClient.CurrentState == ClientNPC.State.SittingAtSeat)
+                    {
+                        _timerText.text = waitingForFoodLabel;
+                        _timerText.fontSize = timerFontSize;
+                        _timerText.color = timerTextColor;
+                        labelPos = timerAnchor != null ? timerAnchor.position : _seatedClient.transform.position + Vector3.up * timerHeightOffset;
+                    }
+                    else
+                    {
+                        _timerText.text = goneLabel;
+                        _timerText.fontSize = timerFontSize;
+                        _timerText.color = timerTextColor;
+                        labelPos = GetSpotLabelPosition();
+                    }
+                }
+                else if (_breakdownInProgress)
                 {
                     string label = breakdownLabel.Trim().TrimEnd('!');
                     _timerText.text = label;
                     _timerText.fontSize = breakdownFontSize;
                     _timerText.color = Color.Lerp(Color.red, timerTextColor, 0.5f);
+                    labelPos = timerAnchor != null ? timerAnchor.position : _seatedClient.transform.position + Vector3.up * timerHeightOffset;
                 }
                 else
                 {
@@ -316,10 +367,10 @@ public class ComputerSpot : MonoBehaviour
                     _timerText.text = string.Format("{0}:{1:D2}", h, m);
                     _timerText.fontSize = timerFontSize;
                     _timerText.color = timerTextColor;
+                    labelPos = timerAnchor != null ? timerAnchor.position : _seatedClient.transform.position + Vector3.up * timerHeightOffset;
                 }
 
-                Vector3 timerPos = timerAnchor != null ? timerAnchor.position : _seatedClient.transform.position + Vector3.up * timerHeightOffset;
-                _timerCanvas.transform.position = timerPos;
+                _timerCanvas.transform.position = labelPos;
                 if (_mainCam != null)
                     _timerCanvas.transform.rotation = Quaternion.LookRotation(_timerCanvas.transform.position - _mainCam.transform.position);
             }
@@ -330,6 +381,13 @@ public class ComputerSpot : MonoBehaviour
             _timerCanvas = null;
             _timerText = null;
         }
+    }
+
+    Vector3 GetSpotLabelPosition()
+    {
+        if (timerAnchor != null) return timerAnchor.position;
+        if (chair != null) return chair.position + Vector3.up * timerHeightOffset;
+        return transform.position + Vector3.up * timerHeightOffset;
     }
 
     float GetElapsedHours()
@@ -391,6 +449,70 @@ public class ComputerSpot : MonoBehaviour
         _clientGoneForDrink = false;
         _sessionStartTimeHours = gameTime.CurrentTimeHours;
         _sessionDurationHours = _remainingSessionHours;
+    }
+
+    /// <summary> Клиент ушёл за едой — ставим сессию на паузу. </summary>
+    public void PauseSessionForFood(ClientNPC npc)
+    {
+        if (_seatedClient != npc || !isOccupied) return;
+        _clientGoneForFood = true;
+        _remainingSessionHours = _sessionDurationHours - GetElapsedHours();
+        _remainingSessionHours = Mathf.Max(0.01f, _remainingSessionHours);
+    }
+
+    /// <summary> Игрок отказался от заказа еды (Q) — клиент возвращается, возобновляем сессию. </summary>
+    public void ResumeSessionForFood()
+    {
+        if (!_clientGoneForFood || gameTime == null) return;
+        _clientGoneForFood = false;
+        _foodDeliveryTimeRemaining = -1f;
+        _sessionStartTimeHours = gameTime.CurrentTimeHours;
+        _sessionDurationHours = _remainingSessionHours;
+    }
+
+    /// <summary> Игрок принял заказ (E): клиент пошёл на место, запускаем таймер доставки. </summary>
+    public void OnFoodOrderAccepted(ClientNPC npc)
+    {
+        if (_seatedClient != npc || !_clientGoneForFood) return;
+        _foodDeliveryTimeRemaining = foodDeliveryTimeLimitSeconds;
+    }
+
+    /// <summary> Игрок принёс еду к столу — возобновляем сессию. </summary>
+    public void OnFoodDelivered()
+    {
+        if (!_clientGoneForFood || gameTime == null) return;
+        _clientGoneForFood = false;
+        _foodDeliveryTimeRemaining = -1f;
+        _sessionStartTimeHours = gameTime.CurrentTimeHours;
+        _sessionDurationHours = _remainingSessionHours;
+    }
+
+    /// <summary> Таймаут доставки еды: клиент уходит, возврат за сессию и бургер. </summary>
+    void EndSessionDueToFoodTimeout()
+    {
+        float sessionRefund = _seatedClient != null ? _seatedClient.PaymentAmount : 0f;
+        float burgerRefund = (PlayerCarry.Instance != null) ? PlayerCarry.Instance.BurgerPaymentAmount : 0f;
+        DestroyTimer();
+        if (_seatedClient != null)
+            Destroy(_seatedClient.gameObject);
+        _seatedClient = null;
+        isOccupied = false;
+        _clientGoneForFood = false;
+        _foodDeliveryTimeRemaining = -1f;
+        SetHighlight(_highlighted);
+        if (PlayerBalance.Instance != null)
+            PlayerBalance.Instance.Add(-(sessionRefund + burgerRefund));
+        var spawner = FindFirstObjectByType<ClientNPCSpawner>();
+        spawner?.OnClientLeftComputer();
+    }
+
+    /// <summary> Попытаться отдать еду клиенту (игрок на столе с бургером). Возвращает true, если доставка принята. </summary>
+    public bool TryDeliverFood()
+    {
+        if (!_clientGoneForFood || _seatedClient == null) return false;
+        if (PlayerCarry.Instance == null || !PlayerCarry.Instance.HasBurger) return false;
+        _seatedClient.OnReceiveFood();
+        return true;
     }
 
     /// <summary> Игрок починил комп (удерживал E). Если была поломка при клиенте — клиент остаётся; если пустой сломанный — место снова свободно. </summary>
@@ -469,7 +591,15 @@ public class ComputerSpot : MonoBehaviour
     {
         _highlighted = on;
         if (_outlineRenderers == null || _outlineMaterial == null) return;
-        Color c = (isBroken || _breakdownInProgress) ? brokenOutlineColor : (isOccupied ? occupiedOutlineColor : outlineColor);
+        Color c;
+        if (isBroken || _breakdownInProgress)
+            c = brokenOutlineColor;
+        else if (_clientGoneForFood)
+            c = waitingForFoodOutlineColor;
+        else if (isOccupied)
+            c = occupiedOutlineColor;
+        else
+            c = outlineColor;
         _outlineMaterial.SetColor("_OutlineColor", c);
         foreach (Renderer r in _outlineRenderers)
         {
@@ -489,6 +619,8 @@ public class ComputerSpot : MonoBehaviour
     public bool IsBroken => isBroken;
     /// <summary> Клиент ушёл за напитком — сессия на паузе. </summary>
     public bool IsClientGoneForDrink => _clientGoneForDrink;
+    /// <summary> Клиент ждёт доставку еды — сессия на паузе. </summary>
+    public bool IsClientGoneForFood => _clientGoneForFood;
     /// <summary> Сейчас идёт поломка: клиент сидит, над головой таймер починки. Успел починить — клиент остаётся. </summary>
     public bool IsBreakdownInProgress => _breakdownInProgress;
 

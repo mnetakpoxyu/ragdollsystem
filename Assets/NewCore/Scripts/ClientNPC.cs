@@ -18,7 +18,9 @@ public class ClientNPC : MonoBehaviour
         WalkingToSeat,
         SittingAtSeat,
         WalkingToCounterForDrink,
-        WaitingForDrink
+        WaitingForDrink,
+        WalkingToCounterForFood,
+        WaitingForFood
     }
 
     [Header("Точка назначения")]
@@ -81,6 +83,14 @@ public class ClientNPC : MonoBehaviour
     [Tooltip("Проверять желание попить каждые N реальных секунд (чтобы не проверять каждый кадр).")]
     [SerializeField] float wantDrinkCheckInterval = 5f;
 
+    [Header("Еда (рандом за сессию)")]
+    [Tooltip("Вероятность, что NPC захочет поесть за сессию (0–1). Только один NPC одновременно может идти за едой.")]
+    [SerializeField, Range(0f, 1f)] float wantFoodChancePerSession = 0.35f;
+    [Tooltip("Минимальное время в реальных секундах, что NPC должен посидеть, прежде чем может захотеть поесть.")]
+    [SerializeField] float wantFoodMinRealSeconds = 20f;
+    [Tooltip("Проверять желание поесть каждые N реальных секунд.")]
+    [SerializeField] float wantFoodCheckInterval = 6f;
+
     NavMeshAgent _agent;
     Animator _anim;
     State _state = State.WaitingAtDoor;
@@ -108,10 +118,14 @@ public class ClientNPC : MonoBehaviour
     float _sitDownRealTime = -1f;
     float _lastDrinkCheckTime = -1f;
     static ClientNPC _currentThirstyNpc;
+    bool _foodRolled;
+    float _lastFoodCheckTime = -1f;
+    static ClientNPC _currentHungryNpc;
 
     public static ClientNPC CurrentThirstyNpc => _currentThirstyNpc;
+    public static ClientNPC CurrentHungryNpc => _currentHungryNpc;
 
-    /// <summary> Сколько NPC сейчас идут к стойке, ждут у стойки или ждут напиток. Спавнер не спавнит второго, пока стойка «занята». </summary>
+    /// <summary> Сколько NPC сейчас идут к стойке, ждут у стойки, ждут напиток или еду. Спавнер не спавнит второго, пока стойка «занята». </summary>
     public static int CountGoingToOrAtCounter()
     {
         int count = 0;
@@ -120,7 +134,8 @@ public class ClientNPC : MonoBehaviour
         {
             var s = all[i].CurrentState;
             if (s == State.WalkingToCounter || s == State.WaitingAtCounter ||
-                s == State.WalkingToCounterForDrink || s == State.WaitingForDrink)
+                s == State.WalkingToCounterForDrink || s == State.WaitingForDrink ||
+                s == State.WalkingToCounterForFood || s == State.WaitingForFood)
                 count++;
         }
         return count;
@@ -155,6 +170,8 @@ public class ClientNPC : MonoBehaviour
     {
         if (_currentThirstyNpc == this)
             _currentThirstyNpc = null;
+        if (_currentHungryNpc == this)
+            _currentHungryNpc = null;
     }
 
     void Start()
@@ -277,6 +294,17 @@ public class ClientNPC : MonoBehaviour
                 break;
             case State.WaitingForDrink:
                 break;
+            case State.WalkingToCounterForFood:
+                if (_agent != null && _agent.isOnNavMesh)
+                {
+                    if (!_agent.pathPending && _agent.remainingDistance <= arriveDistance)
+                        _state = State.WaitingForFood;
+                    else if (stuckCheckInterval > 0f && Time.time - _lastStuckCheckTime >= stuckCheckInterval)
+                        TryUnstuck();
+                }
+                break;
+            case State.WaitingForFood:
+                break;
             case State.WalkingToSeat:
                 if (_agent != null && _agent.isOnNavMesh)
                 {
@@ -308,17 +336,33 @@ public class ClientNPC : MonoBehaviour
             case State.SittingAtSeat:
                 if (_sitDownRealTime < 0f)
                     _sitDownRealTime = Time.time;
-                // Нельзя идти за напитком, если уже сломался компьютер и ждём ремонт — только один ивент: либо ремонт, либо напиток.
-                if (!_drinkRolled && _assignedSpot != null && !_assignedSpot.IsClientGoneForDrink && !_assignedSpot.IsBreakdownInProgress && _currentThirstyNpc == null)
+                // Нельзя идти за напитком/едой, если уже сломался компьютер и ждём ремонт — только один ивент.
+                if (_assignedSpot != null && !_assignedSpot.IsClientGoneForDrink && !_assignedSpot.IsClientGoneForFood && !_assignedSpot.IsBreakdownInProgress)
                 {
-                    float satFor = Time.time - _sitDownRealTime;
-                    if (satFor >= wantDrinkMinRealSeconds && (Time.time - _lastDrinkCheckTime) >= wantDrinkCheckInterval)
+                    if (!_drinkRolled && _currentThirstyNpc == null && _currentHungryNpc == null)
                     {
-                        _lastDrinkCheckTime = Time.time;
-                        if (Random.value < wantDrinkChancePerSession)
+                        float satFor = Time.time - _sitDownRealTime;
+                        if (satFor >= wantDrinkMinRealSeconds && (Time.time - _lastDrinkCheckTime) >= wantDrinkCheckInterval)
                         {
-                            _drinkRolled = true;
-                            RequestDrink();
+                            _lastDrinkCheckTime = Time.time;
+                            if (Random.value < wantDrinkChancePerSession)
+                            {
+                                _drinkRolled = true;
+                                RequestDrink();
+                            }
+                        }
+                    }
+                    if (!_foodRolled && _currentThirstyNpc == null && _currentHungryNpc == null)
+                    {
+                        float satFor = Time.time - _sitDownRealTime;
+                        if (satFor >= wantFoodMinRealSeconds && (Time.time - _lastFoodCheckTime) >= wantFoodCheckInterval)
+                        {
+                            _lastFoodCheckTime = Time.time;
+                            if (Random.value < wantFoodChancePerSession)
+                            {
+                                _foodRolled = true;
+                                RequestFood();
+                            }
                         }
                     }
                 }
@@ -342,8 +386,8 @@ public class ClientNPC : MonoBehaviour
 
     void UpdateAnimator()
     {
-        bool walking = _state == State.WalkingToCounter || _state == State.WalkingToSeat || _state == State.WalkingToCounterForDrink;
-        bool idle = _state == State.WaitingAtDoor || _state == State.WaitingAtCounter || _state == State.WaitingForDrink;
+        bool walking = _state == State.WalkingToCounter || _state == State.WalkingToSeat || _state == State.WalkingToCounterForDrink || _state == State.WalkingToCounterForFood;
+        bool idle = _state == State.WaitingAtDoor || _state == State.WaitingAtCounter || _state == State.WaitingForDrink || _state == State.WaitingForFood;
         bool sitting = _state == State.SittingAtSeat;
 
         if (!string.IsNullOrEmpty(walkingParam)) _anim.SetBool(walkingParam, walking);
@@ -448,6 +492,9 @@ public class ClientNPC : MonoBehaviour
         wantDrinkChancePerSession = other.wantDrinkChancePerSession;
         wantDrinkMinRealSeconds = other.wantDrinkMinRealSeconds;
         wantDrinkCheckInterval = other.wantDrinkCheckInterval;
+        wantFoodChancePerSession = other.wantFoodChancePerSession;
+        wantFoodMinRealSeconds = other.wantFoodMinRealSeconds;
+        wantFoodCheckInterval = other.wantFoodCheckInterval;
         // Заново взять агент и применить настройки (важно для спавненных префабов: агент мог быть null в Awake или добавлен позже)
         _agent = GetComponent<NavMeshAgent>();
         if (_agent != null)
@@ -496,6 +543,10 @@ public class ClientNPC : MonoBehaviour
         _recordedPhrase = null;
         _phrasesLeftToPlay = 0;
         _gameTime = null;
+        _drinkRolled = false;
+        _foodRolled = false;
+        _lastDrinkCheckTime = -1f;
+        _lastFoodCheckTime = -1f;
         _prevAnimState = (State)(-1);
         if (_anim != null)
         {
@@ -570,6 +621,63 @@ public class ClientNPC : MonoBehaviour
         GoSitAt(_seatChair, _seatSitPoint);
         var spawner = UnityEngine.Object.FindFirstObjectByType<ClientNPCSpawner>();
         spawner?.OnClientLeftCounter();
+    }
+
+    /// <summary> NPC захотел поесть: встаёт, сессия на паузе, идёт к стойке. Только один NPC в игре может быть «голодным». </summary>
+    void RequestFood()
+    {
+        if (_currentHungryNpc != null || _assignedSpot == null || _seatChair == null || counterTarget == null || _agent == null) return;
+        _currentHungryNpc = this;
+        _assignedSpot.PauseSessionForFood(this);
+        _agent.enabled = true;
+        Vector3 standPos = _seatChair.position + _seatChair.forward * 0.5f;
+        transform.SetPositionAndRotation(standPos, _seatChair.rotation);
+        EnsureOnNavMesh();
+        if (_agent.isOnNavMesh)
+        {
+            _agent.SetDestination(counterTarget.position);
+            _state = State.WalkingToCounterForFood;
+            _lastPositionForStuck = transform.position;
+            _lastStuckCheckTime = Time.time;
+        }
+        else
+        {
+            _currentHungryNpc = null;
+            _assignedSpot.ResumeSessionForFood();
+        }
+    }
+
+    /// <summary> Игрок принял заказ (E): клиент платит за еду, идёт обратно на место, запускается таймер доставки. </summary>
+    public void OnAcceptFoodOrder()
+    {
+        if (_state != State.WaitingForFood) return;
+        if (PlayerBalance.Instance != null && PlayerCarry.Instance != null)
+            PlayerBalance.Instance.Add(PlayerCarry.Instance.BurgerPaymentAmount);
+        _assignedSpot?.OnFoodOrderAccepted(this);
+        GoSitAt(_seatChair, _seatSitPoint);
+        var spawner = UnityEngine.Object.FindFirstObjectByType<ClientNPCSpawner>();
+        spawner?.OnClientLeftCounter();
+    }
+
+    /// <summary> Игрок отказался от заказа (Q): клиент просто идёт обратно на место, без оплаты. </summary>
+    public void OnDeclineFoodOrder()
+    {
+        if (_state != State.WaitingForFood) return;
+        _currentHungryNpc = null;
+        _assignedSpot?.ResumeSessionForFood();
+        GoSitAt(_seatChair, _seatSitPoint);
+        var spawner = UnityEngine.Object.FindFirstObjectByType<ClientNPCSpawner>();
+        spawner?.OnClientLeftCounter();
+    }
+
+    /// <summary> Игрок принёс еду к столу. NPC получает, сессия возобновляется. </summary>
+    public void OnReceiveFood()
+    {
+        if (_state != State.SittingAtSeat) return;
+        if (PlayerCarry.Instance != null)
+            PlayerCarry.Instance.GiveBurger();
+        _currentHungryNpc = null;
+        _assignedSpot?.OnFoodDelivered();
     }
 
     /// <summary>
