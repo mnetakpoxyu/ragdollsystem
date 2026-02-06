@@ -307,6 +307,7 @@ public class PlayerHQDVape : MonoBehaviour
         {
             SetupVaporRenderer(renderer, vaporColor);
         }
+        ParticlesCollisionSetup.SetupCollisionAndSplash(_vaporInstance, vaporColor, true);
     }
 
     static void SetupVaporRenderer(ParticleSystemRenderer renderer, Color tint)
@@ -565,6 +566,8 @@ public class PlayerHQDVape : MonoBehaviour
         ApplyVaporForwardExhale(ps);
         ApplyVaporSoftMaterial(ps);
         ApplyVaporColor(ps, vaporColor);
+        if (!ps.collision.enabled)
+            ParticlesCollisionSetup.SetupCollisionAndSplash(ps, vaporColor, true);
 
         float sizeBase = Mathf.Lerp(vaporMinStartSize, vaporMaxStartSize, normalizedHold);
         float sizeMul = 1f + Random.Range(-vaporSizeRandomness, vaporSizeRandomness);
@@ -664,6 +667,8 @@ public class PlayerHQDVape : MonoBehaviour
         noise.damping = true;
         noise.octaveCount = 2;
         noise.quality = ParticleSystemNoiseQuality.Low;
+
+        ParticlesCollisionSetup.SetupCollisionAndSplash(ps, vaporColor, true);
 
         var renderer = ringGo.GetComponent<ParticleSystemRenderer>();
         if (renderer != null)

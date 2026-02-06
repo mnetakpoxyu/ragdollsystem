@@ -986,6 +986,7 @@ public class ClientNPC : MonoBehaviour
             if (renderer.material.HasProperty("_Color")) renderer.material.SetColor("_Color", new Color(1f, 1f, 1f, 0.5f));
             renderer.renderMode = ParticleSystemRenderMode.Billboard;
         }
+        ParticlesCollisionSetup.SetupCollisionAndSplash(_hookahSmokeInstance, new Color(0.92f, 0.92f, 0.96f, 0.45f), true);
         go.SetActive(false);
     }
 
