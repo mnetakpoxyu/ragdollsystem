@@ -192,6 +192,11 @@ public class ClientNPC : MonoBehaviour
             _agent.updateRotation = true;
             _agent.speed = moveSpeed;
             _agent.autoRepath = true;
+            // Обход друг друга: без этого NPC врезаются и стоят бесконечно
+            if (_agent.obstacleAvoidanceType == ObstacleAvoidanceType.NoObstacleAvoidance)
+                _agent.obstacleAvoidanceType = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
+            _agent.avoidancePriority = Random.Range(0, 100); // разный приоритет — кто-то уступает, кто-то обходит
+            if (_agent.radius < 0.25f) _agent.radius = 0.25f; // минимальный радиус для учёта при избегании
         }
 
         _anim = animator != null ? animator : GetComponentInChildren<Animator>();

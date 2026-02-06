@@ -73,6 +73,22 @@ public class ComputerSpot : MonoBehaviour
     [Tooltip("Размер шрифта надписи «Ремонт» (таймер сессии использует Timer Font Size).")]
     [SerializeField] int breakdownFontSize = 18;
 
+    [Header("Возгорание компьютера (редко)")]
+    [Tooltip("Вероятность возгорания за сессию (0–1). Ивент редкий, при срабатывании клиент встаёт и уходит, комп становится сломанным.")]
+    [SerializeField, Range(0f, 1f)] float fireChancePerSession = 0.03f;
+    [Tooltip("Минимальная доля сессии (0–1), после которой может выпасть возгорание.")]
+    [SerializeField, Range(0.05f, 0.95f)] float fireMinSessionElapsed = 0.15f;
+    [Tooltip("Корпус компьютера в сцене — перетащи сюда объект компа. Эффект появится в его позиции.")]
+    [SerializeField] Transform fireVfxPoint;
+    [Tooltip("Опционально: префаб дыма/огня. Если пусто — создаётся огненный дым в коде (идёт вверх).")]
+    [SerializeField] GameObject fireVfxPrefab;
+    [Tooltip("Сколько затяжек вейпа (пар в сторону компьютера) нужно для тушения. Игрок должен быть близко и направлять пар в комп.")]
+    [SerializeField, Min(1)] int extinguishHitsRequired = 3;
+    [Tooltip("Максимальная дистанция до компьютера для засчитывания затяжки (м).")]
+    [SerializeField] float maxExtinguishDistance = 2.5f;
+    [Tooltip("Угол: пар должен идти в сторону компьютера (градусы). 55 = примерно в сторону компа.")]
+    [SerializeField, Range(10f, 90f)] float maxExtinguishAngleDeg = 55f;
+
     [Header("Доставка еды")]
     [Tooltip("Сколько секунд (реального времени) у игрока на доставку еды клиенту. Не успел — клиент уходит, возврат за сессию и бургер.")]
     [SerializeField] float foodDeliveryTimeLimitSeconds = 60f;
@@ -363,6 +379,17 @@ public class ComputerSpot : MonoBehaviour
                     _breakdownTimerRemaining = repairTimeLimitSeconds;
                 }
             }
+
+            // Редкий ивент: возгорание компьютера. Клиент уходит, комп становится сломанным, появляется дым/огонь.
+            if (!_fireRolled && !_breakdownInProgress && _seatedClient.CurrentState == ClientNPC.State.SittingAtSeat && elapsed >= _sessionDurationHours * fireMinSessionElapsed)
+            {
+                _fireRolled = true;
+                if (Random.value < fireChancePerSession)
+                {
+                    TriggerFireEvent();
+                    return;
+                }
+            }
         }
 
         // Надпись над местом: «Ушёл», «Ждёт еду» или таймер сессии
@@ -618,6 +645,151 @@ public class ComputerSpot : MonoBehaviour
         }
     }
 
+    void ClearFireVfx()
+    {
+        if (_fireVfxInstance != null)
+        {
+            Destroy(_fireVfxInstance);
+            _fireVfxInstance = null;
+        }
+        _isOnFire = false;
+    }
+
+    /// <summary> Создать огненный дым вверх (имитация огня: оранж/жёлтый/красный), если префаб не задан. </summary>
+    GameObject CreateFireSmokeInstance()
+    {
+        if (fireVfxPoint == null) return null;
+        var go = new GameObject("ComputerFireSmoke");
+        go.transform.SetParent(fireVfxPoint);
+        go.transform.localPosition = Vector3.zero;
+        go.transform.localRotation = Quaternion.Euler(-90f, 0f, 0f); // конус смотрит вверх
+        go.transform.localScale = Vector3.one;
+
+        var ps = go.AddComponent<ParticleSystem>();
+        var main = ps.main;
+        main.loop = true;
+        main.duration = 5f;
+        main.startLifetime = 2.8f;
+        main.startSpeed = new ParticleSystem.MinMaxCurve(0.2f, 0.45f);
+        main.startSize = new ParticleSystem.MinMaxCurve(0.28f, 0.55f);
+        main.startColor = new Color(0.88f, 0.48f, 0.28f, 0.5f); // тёплый янтарь, не кричащий
+        main.simulationSpace = ParticleSystemSimulationSpace.World;
+        main.maxParticles = 320;
+        main.gravityModifier = -0.02f;
+        main.playOnAwake = true;
+
+        var emission = ps.emission;
+        emission.enabled = true;
+        emission.rateOverTime = 20f;
+
+        var shape = ps.shape;
+        shape.enabled = true;
+        shape.shapeType = ParticleSystemShapeType.Cone;
+        shape.angle = 14f;
+        shape.radius = 0.1f;
+
+        var vel = ps.velocityOverLifetime;
+        vel.enabled = true;
+        vel.space = ParticleSystemSimulationSpace.Local;
+        vel.z = new ParticleSystem.MinMaxCurve(0.15f, 0.4f);
+        vel.x = new ParticleSystem.MinMaxCurve(-0.03f, 0.03f);
+        vel.y = new ParticleSystem.MinMaxCurve(-0.03f, 0.03f);
+
+        var colorOverLifetime = ps.colorOverLifetime;
+        colorOverLifetime.enabled = true;
+        var grad = new Gradient();
+        grad.SetKeys(
+            new[] { new GradientColorKey(new Color(0.9f, 0.55f, 0.32f), 0f), new GradientColorKey(new Color(0.75f, 0.38f, 0.22f), 0.5f), new GradientColorKey(new Color(0.35f, 0.2f, 0.15f), 1f) },
+            new[] { new GradientAlphaKey(0.48f, 0f), new GradientAlphaKey(0.3f, 0.55f), new GradientAlphaKey(0f, 1f) });
+        colorOverLifetime.color = grad;
+
+        var renderer = go.GetComponent<ParticleSystemRenderer>();
+        if (renderer != null)
+        {
+            renderer.material = new Material(Shader.Find("Legacy Shaders/Particles/Alpha Blended Premultiply") ?? Shader.Find("Particles/Standard Unlit"));
+            if (renderer.material != null && renderer.material.HasProperty("_Color"))
+                renderer.material.SetColor("_Color", new Color(0.85f, 0.5f, 0.3f, 0.45f));
+            renderer.renderMode = ParticleSystemRenderMode.Billboard;
+        }
+
+        ps.Play();
+        return go;
+    }
+
+    /// <summary> Вызвать при выдохе вейпа: от позиции exhalePosition в направлении exhaleDirection. Если игрок близко и направляет пар в этот комп — засчитывается затяжка; после 2–3 тушит. </summary>
+    public bool TryExtinguishWithVape(Vector3 exhalePosition, Vector3 exhaleDirection)
+    {
+        if (!_isOnFire || fireVfxPoint == null) return false;
+        Vector3 toComputer = fireVfxPoint.position - exhalePosition;
+        float dist = toComputer.magnitude;
+        if (dist > maxExtinguishDistance || dist < 0.01f) return false;
+        Vector3 toComputerNorm = toComputer / dist;
+        float cosAngle = Vector3.Dot(exhaleDirection.normalized, toComputerNorm);
+        float cosMin = Mathf.Cos(maxExtinguishAngleDeg * Mathf.Deg2Rad);
+        if (cosAngle < cosMin) return false;
+
+        _extinguishHitsCount++;
+        if (_extinguishHitsCount >= extinguishHitsRequired)
+        {
+            ClearFireVfx();
+            isBroken = false;
+            SetHighlight(_highlighted);
+            var spawner = FindFirstObjectByType<ClientNPCSpawner>();
+            spawner?.OnClientLeftComputer();
+        }
+        return true;
+    }
+
+    /// <summary> Вызвать при выдохе вейпа (из PlayerHQDVape). Позиция и направление пара — в мировых координатах. Возвращает true, если хотя бы один горящий комп получил затяжку. </summary>
+    public static bool TryExtinguishAny(Vector3 exhalePosition, Vector3 exhaleDirection)
+    {
+        bool any = false;
+        foreach (var spot in _allSpots)
+        {
+            if (spot == null) continue;
+            if (spot.TryExtinguishWithVape(exhalePosition, exhaleDirection))
+                any = true;
+        }
+        return any;
+    }
+
+    void TriggerFireEvent()
+    {
+        if (_isOnFire) return;
+        _isOnFire = true;
+        _extinguishHitsCount = 0;
+        isBroken = true;
+        DestroyTimer();
+        ClearPlacedHookah();
+        ClearPlacedFood();
+
+        // Визуал дыма: префаб или серый дым в коде (идёт вверх, видно что комп сломан)
+        if (fireVfxPoint != null)
+        {
+            if (fireVfxPrefab != null)
+            {
+                _fireVfxInstance = Instantiate(fireVfxPrefab, fireVfxPoint.position, fireVfxPoint.rotation, fireVfxPoint);
+            }
+            else
+            {
+                _fireVfxInstance = CreateFireSmokeInstance();
+            }
+        }
+
+        // Клиент уходит
+        ClientNPC client = _seatedClient;
+        _seatedClient = null;
+        isOccupied = false;
+        _breakdownInProgress = false;
+        _clientGoneForDrink = false;
+        _clientGoneForFood = false;
+        _clientGoneForHookah = false;
+        _foodDeliveryTimeRemaining = -1f;
+        SetHighlight(_highlighted);
+        if (client != null)
+            client.LeaveAndGoToExit();
+    }
+
     /// <summary> Таймаут доставки еды: клиент уходит, возврат за сессию и бургер. </summary>
     void EndSessionDueToFoodTimeout()
     {
@@ -674,6 +846,7 @@ public class ComputerSpot : MonoBehaviour
         else if (isBroken)
         {
             isBroken = false;
+            ClearFireVfx();
             SetHighlight(_highlighted);
             var spawner = FindFirstObjectByType<ClientNPCSpawner>();
             spawner?.OnClientLeftComputer();
@@ -765,6 +938,10 @@ public class ComputerSpot : MonoBehaviour
 
     /// <summary> Комп сломан (клиент ушёл по таймауту или сломан пустой). Пока не починишь — новое место не даётся. </summary>
     public bool IsBroken => isBroken;
+    /// <summary> Горит (после ивента возгорания). Тушится паром вейпа, не починкой по E. </summary>
+    public bool IsOnFire => _isOnFire;
+    /// <summary> Сколько ещё затяжек вейпа в сторону компьютера нужно для тушения. </summary>
+    public int ExtinguishHitsRemaining => Mathf.Max(0, extinguishHitsRequired - _extinguishHitsCount);
     /// <summary> Клиент ушёл за напитком — сессия на паузе. </summary>
     public bool IsClientGoneForDrink => _clientGoneForDrink;
     /// <summary> Клиент ждёт доставку еды — сессия на паузе. </summary>
@@ -787,6 +964,10 @@ public class ComputerSpot : MonoBehaviour
     bool _breakdownInProgress;
     float _breakdownTimerRemaining;
     bool _breakdownRolled;
+    bool _fireRolled;
+    bool _isOnFire;
+    int _extinguishHitsCount;
+    GameObject _fireVfxInstance;
 
     /// <summary> Посадить клиента за этот стол. NPC пойдёт к стулу и сядет. Возвращает true, если место было свободно. За сломанный стол сажать нельзя — сначала починить. Баланс зачисляется при посадке. </summary>
     public bool SeatClient(ClientNPC npc)
@@ -800,6 +981,7 @@ public class ComputerSpot : MonoBehaviour
         _sessionStartTimeHours = gameTime != null ? gameTime.CurrentTimeHours : 0f;
         isOccupied = true;
         _breakdownRolled = false;
+        _fireRolled = false;
         // Зачисляем оплату за сессию только когда клиента отправили за комп
         if (npc.PaymentAmount > 0f && PlayerBalance.Instance != null)
             PlayerBalance.Instance.Add(npc.PaymentAmount);

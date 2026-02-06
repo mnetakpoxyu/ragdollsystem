@@ -76,6 +76,7 @@ public class PlayerInteract : MonoBehaviour
     const string HintSeatClient = "Посадить клиента  [E]";
     const string HintRepair = "Удерживайте [E] — починка";
     const string HintRepairMinigame = "Починить [E]";
+    const string HintExtinguishVape = "Потушите паром вейпа: затяжка [V], направьте пар в компьютер. Осталось затяжек: ";
 
     void Start()
     {
@@ -372,7 +373,9 @@ public class PlayerInteract : MonoBehaviour
                 }
                 else if (_currentSpot != null)
                 {
-                    if (_currentSpot.IsClientGoneForFood && PlayerCarry.Instance != null && PlayerCarry.Instance.HasBurger)
+                    if (_currentSpot.IsOnFire)
+                        hintText.text = HintExtinguishVape + _currentSpot.ExtinguishHitsRemaining;
+                    else if (_currentSpot.IsClientGoneForFood && PlayerCarry.Instance != null && PlayerCarry.Instance.HasBurger)
                         hintText.text = "Принести еду  [E]";
                     else if (_currentSpot.IsClientGoneForHookah && PlayerCarry.Instance != null && PlayerCarry.Instance.HasHookah)
                         hintText.text = "Принести кальян  [E]";
@@ -468,7 +471,7 @@ public class PlayerInteract : MonoBehaviour
         }
 
         // Починка компьютера: мини-игра по E или удержание E
-        bool spotNeedsRepair = _currentSpot != null && (_currentSpot.IsBreakdownInProgress || _currentSpot.IsBroken);
+        bool spotNeedsRepair = _currentSpot != null && (_currentSpot.IsBreakdownInProgress || _currentSpot.IsBroken) && !_currentSpot.IsOnFire;
         if (RepairMinigameUI.IsActive)
         {
             _repairProgress = 0f;

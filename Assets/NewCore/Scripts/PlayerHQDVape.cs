@@ -560,6 +560,8 @@ public class PlayerHQDVape : MonoBehaviour
         clone.transform.position = worldMouth;
         clone.transform.rotation = forwardRotation;
 
+        ComputerSpot.TryExtinguishAny(worldMouth, forwardRotation * Vector3.forward);
+
         ApplyVaporForwardExhale(ps);
         ApplyVaporSoftMaterial(ps);
         ApplyVaporColor(ps, vaporColor);
@@ -591,6 +593,8 @@ public class PlayerHQDVape : MonoBehaviour
         Vector3 worldMouth = playerCamera.TransformPoint(visibleLocalPosition + vaporLocalOffset);
         Quaternion forwardRotation = playerCamera.rotation;
         Vector3 worldForward = forwardRotation * Vector3.forward;
+
+        ComputerSpot.TryExtinguishAny(worldMouth, worldForward);
 
         // Объект в мире без родителя — кольцо летит вперёд по взгляду и расширяется
         GameObject ringGo = new GameObject("VaporRing");
