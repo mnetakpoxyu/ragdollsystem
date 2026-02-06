@@ -434,7 +434,7 @@ public class PlayerInteract : MonoBehaviour
                 }
                 else if (_currentClient != null && _currentClient.CurrentState == ClientNPC.State.WaitingAtCounter && !_currentClient.HasOrdered && ComputerSpot.GetFreeSpotsList().Count == 0)
                 {
-                    hintText.text = "Нет свободных мест";
+                    hintText.text = "Нет свободных мест. Отправить обратно  [E]";
                 }
                 else
                     hintText.text = HintMessage;
@@ -657,6 +657,11 @@ public class PlayerInteract : MonoBehaviour
                 ; // управление магнитолой — по клавишам из компонента магнитолы
             else if (_currentDoor != null)
                 _currentDoor.Open();
+            else if (_currentClient != null && _currentClient.CurrentState == ClientNPC.State.WaitingAtCounter && !_currentClient.HasOrdered && ComputerSpot.GetFreeSpotsList().Count == 0)
+            {
+                _currentClient.Dismiss();
+                return;
+            }
             else if (_currentClient != null && _currentClient.CurrentState == ClientNPC.State.WaitingAtCounter && !_currentClient.HasOrdered)
             {
                 ComputerSpot spot = ComputerSpot.GetFreeSpotWithPriceDistribution();

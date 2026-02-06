@@ -84,6 +84,8 @@ public class ComputerSpot : MonoBehaviour
     [SerializeField] string waitingForHookahLabel = "Ждёт кальян";
     [Tooltip("Пустой объект рядом со столом (например HookahPlace). Сюда ставится кальян при доставке — он будет виден рядом со столом.")]
     [SerializeField] Transform hookahPlace;
+    [Tooltip("Пустой объект на столе, куда ставится еда при доставке (бургер будет виден на столе).")]
+    [SerializeField] Transform foodPlaceOnTable;
     [Tooltip("Пустой объект в месте «рта» клиента за этим столом. Дым кальяна идёт из этой точки. Поворот объекта задаёт направление дыма в горизонтальной плоскости.")]
     [SerializeField] Transform hookahMouthPoint;
 
@@ -124,6 +126,40 @@ public class ComputerSpot : MonoBehaviour
         var free = GetFreeSpotsList();
         if (free.Count == 0) return null;
         return free[Random.Range(0, free.Count)];
+    }
+
+    /// <summary> Проверить все места: если клиент уничтожен без EndSession — освободить место. Спавнер вызывает перед проверкой свободных мест. </summary>
+    public static void ReconcileAllSpots()
+    {
+        for (int i = 0; i < _allSpots.Count; i++)
+        {
+            if (_allSpots[i] != null)
+                _allSpots[i].ReconcileSeatedClient();
+        }
+    }
+
+    /// <summary> Если место помечено как занятое, но клиент уничтожен — освободить место и очистить состояние (самовосстановление спавна). </summary>
+    public void ReconcileSeatedClient()
+    {
+        if (!isOccupied) return;
+        if (_seatedClient != null) return;
+        ClearSpotBecauseClientLost();
+    }
+
+    void ClearSpotBecauseClientLost()
+    {
+        DestroyTimer();
+        _breakdownInProgress = false;
+        _breakdownRolled = false;
+        ClearPlacedHookah();
+        ClearPlacedFood();
+        _seatedClient = null;
+        isOccupied = false;
+        _clientGoneForDrink = false;
+        _clientGoneForFood = false;
+        _clientGoneForHookah = false;
+        _foodDeliveryTimeRemaining = -1f;
+        SetHighlight(_highlighted);
     }
 
     /// <summary> Место, куда можно посадить нового клиента: свободное или сломанное (после починки). Для спавна: есть ли хотя бы одно такое место. </summary>
@@ -214,6 +250,7 @@ public class ComputerSpot : MonoBehaviour
     float _foodDeliveryTimeRemaining = -1f;
     bool _clientGoneForHookah;
     Transform _placedHookahVisual;
+    Transform _placedFoodVisual;
     GameObject _registeredHookahSmoke;
 
     void Awake()
@@ -279,6 +316,8 @@ public class ComputerSpot : MonoBehaviour
 
     void LateUpdate()
     {
+        ReconcileSeatedClient();
+
         if (_mainCam == null)
             _mainCam = Camera.main;
 
@@ -429,15 +468,13 @@ public class ComputerSpot : MonoBehaviour
         DestroyTimer();
         _breakdownInProgress = false;
         ClearPlacedHookah();
-        // Оплата уже получена при взаимодействии E у стойки
-        if (_seatedClient != null)
-        {
-            Destroy(_seatedClient.gameObject);
-        }
-
+        ClearPlacedFood();
+        ClientNPC client = _seatedClient;
         _seatedClient = null;
         isOccupied = false;
         SetHighlight(_highlighted);
+        if (client != null)
+            client.LeaveAndGoToExit();
         var spawner = FindFirstObjectByType<ClientNPCSpawner>();
         spawner?.OnClientLeftComputer();
     }
@@ -448,8 +485,8 @@ public class ComputerSpot : MonoBehaviour
         float refund = _seatedClient != null ? _seatedClient.PaymentAmount : 0f;
         DestroyTimer();
         ClearPlacedHookah();
-        if (_seatedClient != null)
-            Destroy(_seatedClient.gameObject);
+        ClearPlacedFood();
+        ClientNPC client = _seatedClient;
         _seatedClient = null;
         isOccupied = false;
         isBroken = true;
@@ -457,6 +494,8 @@ public class ComputerSpot : MonoBehaviour
         SetHighlight(_highlighted);
         if (refund > 0f && PlayerBalance.Instance != null)
             PlayerBalance.Instance.Add(-refund);
+        if (client != null)
+            client.LeaveAndGoToExit();
         var spawner = FindFirstObjectByType<ClientNPCSpawner>();
         spawner?.OnClientLeftComputer();
     }
@@ -586,8 +625,8 @@ public class ComputerSpot : MonoBehaviour
         float burgerRefund = (PlayerCarry.Instance != null) ? PlayerCarry.Instance.BurgerPaymentAmount : 0f;
         DestroyTimer();
         ClearPlacedHookah();
-        if (_seatedClient != null)
-            Destroy(_seatedClient.gameObject);
+        ClearPlacedFood();
+        ClientNPC client = _seatedClient;
         _seatedClient = null;
         isOccupied = false;
         _clientGoneForFood = false;
@@ -595,17 +634,33 @@ public class ComputerSpot : MonoBehaviour
         SetHighlight(_highlighted);
         if (PlayerBalance.Instance != null)
             PlayerBalance.Instance.Add(-(sessionRefund + burgerRefund));
+        if (client != null)
+            client.LeaveAndGoToExit();
         var spawner = FindFirstObjectByType<ClientNPCSpawner>();
         spawner?.OnClientLeftComputer();
     }
 
-    /// <summary> Попытаться отдать еду клиенту (игрок на столе с бургером). Возвращает true, если доставка принята. </summary>
+    /// <summary> Попытаться отдать еду клиенту (игрок на столе с бургером). Если задан Food Place On Table — бургер ставится туда. Принимается и когда NPC ещё идёт на место. </summary>
     public bool TryDeliverFood()
     {
         if (!_clientGoneForFood || _seatedClient == null) return false;
         if (PlayerCarry.Instance == null || !PlayerCarry.Instance.HasBurger) return false;
+        if (foodPlaceOnTable != null)
+            _placedFoodVisual = PlayerCarry.Instance.GiveBurgerTo(foodPlaceOnTable);
+        else
+            PlayerCarry.Instance.GiveBurger();
         _seatedClient.OnReceiveFood();
         return true;
+    }
+
+    /// <summary> Убрать еду со стола (после окончания времени «еды» или при очистке места). Вызывается из ClientNPC при окончании таймера еды. </summary>
+    public void ClearPlacedFood()
+    {
+        if (_placedFoodVisual != null)
+        {
+            Destroy(_placedFoodVisual.gameObject);
+            _placedFoodVisual = null;
+        }
     }
 
     /// <summary> Игрок починил комп (удерживал E). Если была поломка при клиенте — клиент остаётся; если пустой сломанный — место снова свободно. </summary>

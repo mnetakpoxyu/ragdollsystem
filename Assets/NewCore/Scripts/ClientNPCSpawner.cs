@@ -2,135 +2,104 @@ using UnityEngine;
 using UnityEngine.AI;
 
 /// <summary>
-/// Спавнер NPC: массив префабов (разные пиплы/цвета), случайный выбор при спавне.
-/// Не спавнит в Start. Вызывай извне: когда клиента посадили за комп — OnClientSentToComputer();
-/// когда сессия закончилась — OnClientLeftComputer(). Спавн только если есть свободный комп.
-/// Префабы могут быть «только модель» (без скриптов и коллайдеров) — тогда Template NPC обязателен:
-/// с него копируются NavMeshAgent, Collider, ClientNPC и все настройки.
+/// Спавнер NPC: рандомно по таймеру спавнит 1–2 NPC, они идут к админ-стойке. Не привязан к свободным слотам.
+/// Если слотов нет — игрок нажимает E на NPC у стойки, NPC уходит обратно по траектории спавна и исчезает.
 /// </summary>
 public class ClientNPCSpawner : MonoBehaviour
 {
     [Header("Шаблон NPC (обязателен для префабов-моделек)")]
-    [Tooltip("NPC на сцене, с которого копируются ВСЕ компоненты и настройки. Для префабов «только модель» — обязателен. Перетащи сюда один настроенный NPC из иерархии.")]
+    [Tooltip("NPC на сцене, с которого копируются настройки. Перетащи сюда один настроенный NPC из иерархии.")]
     [SerializeField] ClientNPC templateNpc;
 
     [Header("Префабы NPC")]
-    [Tooltip("Массив префабов (модели/цвета). Могут быть только модель без скриптов — тогда всё берётся с Template NPC (агент, коллайдер, логика).")]
     [SerializeField] GameObject[] npcPrefabs;
 
-    [Header("Точки спавна")]
-    [Tooltip("Перетащи сюда все точки (пустые объекты). Спавн — случайная из списка.")]
+    [Header("Точки спавна (отсюда приходят и сюда уходят при «отправить обратно»)")]
     [SerializeField] Transform[] spawnPoints;
 
     [Header("Смещение при спавне")]
-    [Tooltip("Подъём над точкой (м). Подгони под высоту пола.")]
     [SerializeField] float heightOffset = 0f;
-    [Tooltip("Случайный разброс по XZ (м), чтобы не стакаться в одну точку.")]
     [SerializeField] float randomRadius = 0.4f;
 
     [Header("Куда идут NPC")]
     [SerializeField] Transform adminSpot;
     [SerializeField] InteractableDoor[] doors;
 
-    [Header("Периодическая проверка (заполнение спотов)")]
-    [Tooltip("Интервал (сек) проверки: есть ли свободные места; если да — спавним NPC даже если кто-то уже у стойки. Решает проблему, когда после паузы/фриза споты пустые, а события не вызывались.")]
-    [SerializeField] float periodicSpawnCheckInterval = 3f;
+    [Header("Лимит очереди у стойки")]
+    [Tooltip("Не спавним, если столько NPC уже идут к стойке или ждут у стойки. 0 = без лимита. Так спавн не блокируется: кто сел — освободил очередь.")]
+    [SerializeField] int maxNpcsAtCounter = 6;
 
-    float _nextSpawnCheckTime;
+    [Header("Таймер спавна (реальное время)")]
+    [Tooltip("Задержка перед первым спавном (сек).")]
+    [SerializeField] Vector2 firstSpawnDelay = new Vector2(3f, 8f);
+    [Tooltip("Интервал между волнами: каждые 15–40 сек (рандом).")]
+    [SerializeField] Vector2 spawnInterval = new Vector2(15f, 40f);
+    [Tooltip("Сколько NPC спавнить за раз: 1 или 2 (рандом).")]
+    [SerializeField] Vector2Int spawnCountPerWave = new Vector2Int(1, 2);
+
+    float _nextSpawnTime;
 
     void Start()
     {
-        _nextSpawnCheckTime = Time.time + Mathf.Max(0.5f, periodicSpawnCheckInterval * 0.5f);
+        _nextSpawnTime = Time.time + Random.Range(firstSpawnDelay.x, firstSpawnDelay.y);
     }
 
     void Update()
     {
-        if (periodicSpawnCheckInterval <= 0f) return;
-        if (Time.time < _nextSpawnCheckTime) return;
-        _nextSpawnCheckTime = Time.time + periodicSpawnCheckInterval;
-        // Периодически пытаемся заполнить споты; forceFillSpots = true — спавним даже если кто-то у стойки (после фриза/сна все споты должны быть заняты).
-        TrySpawn(forceFillSpots: true);
+        if (Time.time < _nextSpawnTime) return;
+
+        ComputerSpot.ReconcileAllSpots();
+
+        int count = Mathf.Clamp(Random.Range(spawnCountPerWave.x, spawnCountPerWave.y + 1), 1, 2);
+        for (int i = 0; i < count; i++)
+            TrySpawnOne();
+
+        _nextSpawnTime = Time.time + Random.Range(spawnInterval.x, spawnInterval.y);
     }
 
-    /// <summary>
-    /// Вызвать, когда игрок посадил клиента за компьютер. Из PlayerInteract после SeatClient.
-    /// </summary>
-    public void OnClientSentToComputer()
+    public void OnClientSentToComputer() { }
+    public void OnClientLeftComputer() { }
+    public void OnClientLeftCounter() { }
+
+    /// <summary> Спавн одного NPC. Идёт к стойке. Блокируем только если очередь у стойки переполнена (maxNpcsAtCounter). </summary>
+    bool TrySpawnOne()
     {
-        TrySpawn();
-    }
-
-    /// <summary>
-    /// Вызвать, когда сессия клиента закончилась и он уничтожен. Из ComputerSpot в EndSession.
-    /// </summary>
-    public void OnClientLeftComputer()
-    {
-        TrySpawn();
-    }
-
-    /// <summary>
-    /// Вызвать, когда NPC ушёл от стойки (например получил напиток и пошёл обратно). Даёт шанс заспавнить следующего, если раньше не спавнили из-за занятой стойки.
-    /// </summary>
-    public void OnClientLeftCounter()
-    {
-        TrySpawn();
-    }
-
-    /// <param name="forceFillSpots">Если true — спавним одного NPC при наличии свободного места даже когда кто-то уже идёт к стойке/ждёт у стойки (для быстрого заполнения после фриза/паузы).</param>
-    void TrySpawn(bool forceFillSpots = false)
-    {
-        if (npcPrefabs == null || npcPrefabs.Length == 0 || adminSpot == null) return;
-        if (spawnPoints == null || spawnPoints.Length == 0) return;
-        // Есть ли место для нового клиента: свободное или сломанное (после починки можно посадить).
-        if (ComputerSpot.GetRandomSpotForNewClient() == null) return;
-
-        int atCounter = ClientNPC.CountGoingToOrAtCounter();
-        int freeSpots = ComputerSpot.GetFreeSpotsList().Count;
-        // Обычный режим: только один NPC в очереди (идёт к стойке или ждёт у стойки).
-        if (!forceFillSpots)
-        {
-            if (atCounter > 0) return;
-        }
-        else
-        {
-            // Принудительное заполнение: не спавним лишних — в очереди не больше, чем свободных спотов (чтобы не было 8 NPC в простоях).
-            if (atCounter >= freeSpots) return;
-        }
-
-        GameObject prefab = npcPrefabs[Random.Range(0, npcPrefabs.Length)];
-        if (prefab == null) return;
+        if (npcPrefabs == null || npcPrefabs.Length == 0 || adminSpot == null) return false;
+        if (spawnPoints == null || spawnPoints.Length == 0) return false;
+        if (maxNpcsAtCounter > 0 && ClientNPC.CountGoingToOrAtCounter() >= maxNpcsAtCounter) return false;
 
         Transform point = spawnPoints[Random.Range(0, spawnPoints.Length)];
-        if (point == null) return;
+        if (point == null) return false;
+
+        GameObject prefab = npcPrefabs[Random.Range(0, npcPrefabs.Length)];
+        if (prefab == null) return false;
 
         Vector3 pos = point.position + Vector3.up * heightOffset
             + new Vector3(Random.Range(-randomRadius, randomRadius), 0f, Random.Range(-randomRadius, randomRadius));
         Quaternion rot = point.rotation;
 
-        GameObject go = Instantiate(prefab, pos, rot);
+        GameObject go = Object.Instantiate(prefab, pos, rot);
         ClientNPC npc = go.GetComponent<ClientNPC>();
 
-        // Префаб «только модель» — нет ClientNPC. Добавляем все компоненты с шаблона.
         if (npc == null)
         {
             if (templateNpc == null)
             {
-                Debug.LogError("[ClientNPCSpawner] Префаб \"" + prefab.name + "\" без ClientNPC. Задай Template NPC в спавнере (перетащи настроенного NPC со сцены).", prefab);
+                Debug.LogError("[ClientNPCSpawner] Префаб без ClientNPC. Задай Template NPC.", prefab);
                 Object.Destroy(go);
-                return;
+                return false;
             }
             AddComponentsFromTemplate(go, templateNpc);
             npc = go.GetComponent<ClientNPC>();
             if (npc == null)
             {
-                Debug.LogError("[ClientNPCSpawner] Не удалось добавить ClientNPC на " + prefab.name, prefab);
+                Debug.LogError("[ClientNPCSpawner] Не удалось добавить ClientNPC.", prefab);
                 Object.Destroy(go);
-                return;
+                return false;
             }
         }
         else
         {
-            // Префаб уже с ClientNPC — при необходимости добавить агент/коллайдер и скопировать настройки
             if (go.GetComponent<NavMeshAgent>() == null && templateNpc != null)
                 CopyNavMeshAgentFrom(templateNpc.gameObject, go);
             if (go.GetComponent<Collider>() == null && templateNpc != null)
@@ -141,18 +110,16 @@ public class ClientNPCSpawner : MonoBehaviour
             npc.CopyConfigurationFrom(templateNpc);
         npc.InitializeSpawn(adminSpot, doors);
         npc.ResetStateForSpawn();
+        npc.SetExitPoint(point);
         go.transform.SetPositionAndRotation(pos, rot);
         npc.GoToCounterIfReady();
+        return true;
     }
 
-    /// <summary>
-    /// Для префаба «только модель»: добавляем NavMeshAgent, Collider и ClientNPC с копированием настроек с шаблона.
-    /// </summary>
     void AddComponentsFromTemplate(GameObject go, ClientNPC template)
     {
-        GameObject templateGo = template.gameObject;
-        CopyNavMeshAgentFrom(templateGo, go);
-        CopyColliderFrom(templateGo, go);
+        CopyNavMeshAgentFrom(template.gameObject, go);
+        CopyColliderFrom(template.gameObject, go);
         go.AddComponent<ClientNPC>();
     }
 
@@ -203,8 +170,6 @@ public class ClientNPCSpawner : MonoBehaviour
             c.isTrigger = srcSphere.isTrigger;
         }
         else
-        {
-            dest.AddComponent<CapsuleCollider>(); // дефолт для персонажа
-        }
+            dest.AddComponent<CapsuleCollider>();
     }
 }

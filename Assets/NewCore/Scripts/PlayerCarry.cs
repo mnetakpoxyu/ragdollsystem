@@ -325,6 +325,26 @@ public class PlayerCarry : MonoBehaviour
             burgerVisualInHand.SetActive(false);
     }
 
+    /// <summary> Поставить бургер на стол (точка еды). Возвращает объект бургера. Коллайдеры временно отключаются. </summary>
+    public Transform GiveBurgerTo(Transform place)
+    {
+        if (!_hasBurger || _borrowedBurgerVisual == null || place == null) return null;
+        Transform visual = _borrowedBurgerVisual;
+        _hasBurger = false;
+        _borrowedFoodStock = null;
+        _borrowedBurgerVisual = null;
+
+        Vector3 worldScale = visual.lossyScale;
+        visual.SetParent(place);
+        visual.localPosition = Vector3.zero;
+        visual.localRotation = Quaternion.identity;
+        if (place.lossyScale.x != 0f && place.lossyScale.y != 0f && place.lossyScale.z != 0f)
+            visual.localScale = new Vector3(worldScale.x / place.lossyScale.x, worldScale.y / place.lossyScale.y, worldScale.z / place.lossyScale.z);
+        visual.gameObject.SetActive(true);
+        StartCoroutine(DisableCollisionTemporarily(visual.gameObject, 0.25f));
+        return visual;
+    }
+
     /// <summary> Взять кальян. visualFromStock — объект с полки; fromStock — полка (для «положить обратно»). </summary>
     public void TakeHookah(Transform visualFromStock = null, HookahStock fromStock = null)
     {

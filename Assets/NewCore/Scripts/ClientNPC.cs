@@ -22,7 +22,8 @@ public class ClientNPC : MonoBehaviour
         WalkingToCounterForFood,
         WaitingForFood,
         WalkingToCounterForHookah,
-        WaitingForHookah
+        WaitingForHookah,
+        WalkingBackToExit
     }
 
     [Header("Точка назначения")]
@@ -30,6 +31,10 @@ public class ClientNPC : MonoBehaviour
     [SerializeField] Transform counterTarget;
     [Tooltip("Дистанция до точки, при которой считаем «пришёл».")]
     [SerializeField] float arriveDistance = 0.6f;
+
+    [Header("Таймаут у стойки")]
+    [Tooltip("Если игрок не взаимодействует (заказ или попить/есть/кальян), NPC уходит через это время (сек). Рандом в диапазоне.")]
+    [SerializeField] Vector2 waitingAtCounterTimeout = new Vector2(20f, 30f);
 
     [Header("Условие: двери")]
     [Tooltip("Ровно 2 двери (или любое количество): NPC пойдёт только когда ВСЕ эти двери открыты. Перетащи сюда 2 объекта с InteractableDoor. Пусто — идёт сразу.")]
@@ -106,6 +111,10 @@ public class ClientNPC : MonoBehaviour
     [SerializeField] Vector3 mouthOffset = new Vector3(0f, 1.1f, 0.15f);
     [Tooltip("Интервал между «затяжками» дыма (сек). Случайный выбор в этом диапазоне — чаще и разнообразнее.")]
     [SerializeField] Vector2 hookahSmokeInterval = new Vector2(0.8f, 2.2f);
+    [Tooltip("Сколько реальных секунд клиент «ест» после получения еды. В это время не бросаются ивенты напиток/еда/кальян (ремонт возможен).")]
+    [SerializeField] float eatingDurationRealSeconds = 60f;
+    [Tooltip("Сколько реальных секунд клиент «курит» после получения кальяна. В это время ивенты напиток/еда/кальян не бросаются.")]
+    [SerializeField] float smokingDurationRealSeconds = 180f;
 
     NavMeshAgent _agent;
     Animator _anim;
@@ -143,6 +152,15 @@ public class ClientNPC : MonoBehaviour
     bool _isSmokingHookah;
     float _nextHookahSmokeTime;
     ParticleSystem _hookahSmokeInstance;
+    bool _foodReceivedWhileWalking;
+    bool _hookahReceivedWhileWalking;
+    float _eatingUntilTime = -1f;
+    float _smokingUntilTime = -1f;
+    Transform _exitPoint;
+    float _waitingAtCounterSince = -1f;
+    float _waitingAtCounterTimeoutSec = -1f;
+
+    bool IsEatingOrSmoking => (_eatingUntilTime > 0f && Time.time < _eatingUntilTime) || (_smokingUntilTime > 0f && Time.time < _smokingUntilTime);
 
     public static ClientNPC CurrentThirstyNpc => _currentThirstyNpc;
     public static ClientNPC CurrentHungryNpc => _currentHungryNpc;
@@ -156,6 +174,7 @@ public class ClientNPC : MonoBehaviour
         for (int i = 0; i < all.Length; i++)
         {
             var s = all[i].CurrentState;
+            if (s == State.WalkingBackToExit) continue;
             if (s == State.WalkingToCounter || s == State.WaitingAtCounter ||
                 s == State.WalkingToCounterForDrink || s == State.WaitingForDrink ||
                 s == State.WalkingToCounterForFood || s == State.WaitingForFood ||
@@ -202,16 +221,7 @@ public class ClientNPC : MonoBehaviour
 
     void Start()
     {
-        int id = gameObject.GetInstanceID();
-        Vector3 posBefore = transform.position;
-        bool onNavBefore = _agent != null && _agent.isOnNavMesh;
-        Debug.Log($"[NPC {id}] Start: pos={posBefore}, pos.y={posBefore.y:F3}, isOnNavMesh={onNavBefore}");
-
         EnsureOnNavMesh();
-
-        Vector3 posAfter = transform.position;
-        bool onNavAfter = _agent != null && _agent.isOnNavMesh;
-        Debug.Log($"[NPC {id}] После EnsureOnNavMesh: pos={posAfter}, pos.y={posAfter.y:F3}, isOnNavMesh={onNavAfter}");
 
         if (counterTarget == null) return;
         if (AreAllDoorsOpen())
@@ -302,45 +312,85 @@ public class ClientNPC : MonoBehaviour
                 if (_agent != null && _agent.isOnNavMesh)
                 {
                     if (!_agent.pathPending && _agent.remainingDistance <= arriveDistance)
+                    {
                         _state = State.WaitingAtCounter;
+                        _waitingAtCounterSince = Time.time;
+                        _waitingAtCounterTimeoutSec = Random.Range(waitingAtCounterTimeout.x, waitingAtCounterTimeout.y);
+                    }
                     else if (stuckCheckInterval > 0f && Time.time - _lastStuckCheckTime >= stuckCheckInterval)
                         TryUnstuck();
                 }
                 break;
             case State.WaitingAtCounter:
+                if (!_hasOrdered && _waitingAtCounterTimeoutSec > 0f && Time.time - _waitingAtCounterSince >= _waitingAtCounterTimeoutSec)
+                    Dismiss();
                 break;
             case State.WalkingToCounterForDrink:
                 if (_agent != null && _agent.isOnNavMesh)
                 {
                     if (!_agent.pathPending && _agent.remainingDistance <= arriveDistance)
+                    {
                         _state = State.WaitingForDrink;
+                        _waitingAtCounterSince = Time.time;
+                        _waitingAtCounterTimeoutSec = Random.Range(waitingAtCounterTimeout.x, waitingAtCounterTimeout.y);
+                    }
                     else if (stuckCheckInterval > 0f && Time.time - _lastStuckCheckTime >= stuckCheckInterval)
                         TryUnstuck();
                 }
                 break;
             case State.WaitingForDrink:
+                if (_waitingAtCounterTimeoutSec > 0f && Time.time - _waitingAtCounterSince >= _waitingAtCounterTimeoutSec)
+                {
+                    _currentThirstyNpc = null;
+                    _assignedSpot?.ResumeSessionForClient(this);
+                    GoSitAt(_seatChair, _seatSitPoint);
+                }
                 break;
             case State.WalkingToCounterForFood:
                 if (_agent != null && _agent.isOnNavMesh)
                 {
                     if (!_agent.pathPending && _agent.remainingDistance <= arriveDistance)
+                    {
                         _state = State.WaitingForFood;
+                        _waitingAtCounterSince = Time.time;
+                        _waitingAtCounterTimeoutSec = Random.Range(waitingAtCounterTimeout.x, waitingAtCounterTimeout.y);
+                    }
                     else if (stuckCheckInterval > 0f && Time.time - _lastStuckCheckTime >= stuckCheckInterval)
                         TryUnstuck();
                 }
                 break;
             case State.WaitingForFood:
+                if (_waitingAtCounterTimeoutSec > 0f && Time.time - _waitingAtCounterSince >= _waitingAtCounterTimeoutSec)
+                {
+                    _currentHungryNpc = null;
+                    _assignedSpot?.ResumeSessionForFood();
+                    GoSitAt(_seatChair, _seatSitPoint);
+                }
                 break;
             case State.WalkingToCounterForHookah:
                 if (_agent != null && _agent.isOnNavMesh)
                 {
                     if (!_agent.pathPending && _agent.remainingDistance <= arriveDistance)
+                    {
                         _state = State.WaitingForHookah;
+                        _waitingAtCounterSince = Time.time;
+                        _waitingAtCounterTimeoutSec = Random.Range(waitingAtCounterTimeout.x, waitingAtCounterTimeout.y);
+                    }
                     else if (stuckCheckInterval > 0f && Time.time - _lastStuckCheckTime >= stuckCheckInterval)
                         TryUnstuck();
                 }
                 break;
             case State.WaitingForHookah:
+                if (_waitingAtCounterTimeoutSec > 0f && Time.time - _waitingAtCounterSince >= _waitingAtCounterTimeoutSec)
+                {
+                    _currentHookahNpc = null;
+                    _assignedSpot?.ResumeSessionForHookah();
+                    GoSitAt(_seatChair, _seatSitPoint);
+                }
+                break;
+            case State.WalkingBackToExit:
+                if (_agent != null && _agent.isOnNavMesh && !_agent.pathPending && _agent.remainingDistance <= arriveDistance)
+                    Destroy(gameObject);
                 break;
             case State.WalkingToSeat:
                 if (_agent != null && _agent.isOnNavMesh)
@@ -365,6 +415,18 @@ public class ClientNPC : MonoBehaviour
                             transform.SetPositionAndRotation(sitPos, sitRot);
                             _agent.enabled = false;
                         }
+                        if (_foodReceivedWhileWalking)
+                        {
+                            _foodReceivedWhileWalking = false;
+                            _eatingUntilTime = Time.time + eatingDurationRealSeconds;
+                        }
+                        if (_hookahReceivedWhileWalking)
+                        {
+                            _hookahReceivedWhileWalking = false;
+                            _isSmokingHookah = true;
+                            _smokingUntilTime = Time.time + smokingDurationRealSeconds;
+                            _nextHookahSmokeTime = Time.time + Random.Range(hookahSmokeInterval.x * 0.5f, hookahSmokeInterval.x);
+                        }
                     }
                     else if (stuckCheckInterval > 0f && Time.time - _lastStuckCheckTime >= stuckCheckInterval)
                         TryUnstuckToSeat();
@@ -373,8 +435,16 @@ public class ClientNPC : MonoBehaviour
             case State.SittingAtSeat:
                 if (_sitDownRealTime < 0f)
                     _sitDownRealTime = Time.time;
-                // Нельзя идти за напитком/едой, если уже сломался компьютер и ждём ремонт — только один ивент.
-                if (_assignedSpot != null && !_assignedSpot.IsClientGoneForDrink && !_assignedSpot.IsClientGoneForFood && !_assignedSpot.IsClientGoneForHookah && !_assignedSpot.IsBreakdownInProgress)
+                if (_eatingUntilTime > 0f && Time.time >= _eatingUntilTime)
+                {
+                    _eatingUntilTime = -1f;
+                    _assignedSpot?.ClearPlacedFood();
+                }
+                if (_smokingUntilTime > 0f && Time.time >= _smokingUntilTime)
+                    _smokingUntilTime = -1f;
+
+                // Нельзя идти за напитком/едой/кальяном во время еды или курения; ремонт возможен. Нельзя, если уже сломался компьютер.
+                if (_assignedSpot != null && !_assignedSpot.IsClientGoneForDrink && !_assignedSpot.IsClientGoneForFood && !_assignedSpot.IsClientGoneForHookah && !_assignedSpot.IsBreakdownInProgress && !IsEatingOrSmoking)
                 {
                     if (!_drinkRolled && _currentThirstyNpc == null && _currentHungryNpc == null && _currentHookahNpc == null)
                     {
@@ -441,7 +511,7 @@ public class ClientNPC : MonoBehaviour
 
     void UpdateAnimator()
     {
-        bool walking = _state == State.WalkingToCounter || _state == State.WalkingToSeat || _state == State.WalkingToCounterForDrink || _state == State.WalkingToCounterForFood || _state == State.WalkingToCounterForHookah;
+        bool walking = _state == State.WalkingToCounter || _state == State.WalkingToSeat || _state == State.WalkingToCounterForDrink || _state == State.WalkingToCounterForFood || _state == State.WalkingToCounterForHookah || _state == State.WalkingBackToExit;
         bool idle = _state == State.WaitingAtDoor || _state == State.WaitingAtCounter || _state == State.WaitingForDrink || _state == State.WaitingForFood || _state == State.WaitingForHookah;
         bool sitting = _state == State.SittingAtSeat;
 
@@ -527,6 +597,7 @@ public class ClientNPC : MonoBehaviour
     {
         if (other == null) return;
         arriveDistance = other.arriveDistance;
+        waitingAtCounterTimeout = other.waitingAtCounterTimeout;
         sitHeightOffset = other.sitHeightOffset;
         sitPointOffsetDown = other.sitPointOffsetDown;
         sitPointOffsetForward = other.sitPointOffsetForward;
@@ -556,6 +627,8 @@ public class ClientNPC : MonoBehaviour
         hookahSmokePrefab = other.hookahSmokePrefab;
         mouthOffset = other.mouthOffset;
         hookahSmokeInterval = other.hookahSmokeInterval;
+        eatingDurationRealSeconds = other.eatingDurationRealSeconds;
+        smokingDurationRealSeconds = other.smokingDurationRealSeconds;
         // Заново взять агент и применить настройки (важно для спавненных префабов: агент мог быть null в Awake или добавлен позже)
         _agent = GetComponent<NavMeshAgent>();
         if (_agent != null)
@@ -599,6 +672,9 @@ public class ClientNPC : MonoBehaviour
         _requestedSessionHours = 0f;
         _paymentAmount = 0f;
         _assignedSpot = null;
+        _exitPoint = null;
+        _waitingAtCounterSince = -1f;
+        _waitingAtCounterTimeoutSec = -1f;
         _lastPositionForStuck = transform.position;
         _lastStuckCheckTime = Time.time;
         _recordedPhrase = null;
@@ -611,6 +687,11 @@ public class ClientNPC : MonoBehaviour
         _lastFoodCheckTime = -1f;
         _lastHookahCheckTime = -1f;
         _isSmokingHookah = false;
+        _foodReceivedWhileWalking = false;
+        _hookahReceivedWhileWalking = false;
+        _eatingUntilTime = -1f;
+        _smokingUntilTime = -1f;
+        _sitDownRealTime = -1f;
         _prevAnimState = (State)(-1);
         if (_anim != null)
         {
@@ -734,14 +815,20 @@ public class ClientNPC : MonoBehaviour
         spawner?.OnClientLeftCounter();
     }
 
-    /// <summary> Игрок принёс еду к столу. NPC получает, сессия возобновляется. </summary>
+    /// <summary> Игрок принёс еду к столу. Можно принять, пока NPC сидит или идёт обратно на место (доставка «вперёд»). </summary>
     public void OnReceiveFood()
     {
-        if (_state != State.SittingAtSeat) return;
-        if (PlayerCarry.Instance != null)
-            PlayerCarry.Instance.GiveBurger();
+        if (_state != State.SittingAtSeat && _state != State.WalkingToSeat) return;
+        if (_state == State.WalkingToSeat)
+        {
+            _currentHungryNpc = null;
+            _assignedSpot?.OnFoodDelivered();
+            _foodReceivedWhileWalking = true;
+            return;
+        }
         _currentHungryNpc = null;
         _assignedSpot?.OnFoodDelivered();
+        _eatingUntilTime = Time.time + eatingDurationRealSeconds;
     }
 
     /// <summary> NPC захотел покурить кальян: встаёт, сессия на паузе, идёт к стойке. </summary>
@@ -791,15 +878,19 @@ public class ClientNPC : MonoBehaviour
         spawner?.OnClientLeftCounter();
     }
 
-    /// <summary> Игрок принёс кальян к столу. NPC ставит, сессия возобновляется, изо рта периодически идёт дым. </summary>
+    /// <summary> Игрок принёс кальян к столу. Кальян у игрока уже забирает спот в TryDeliverHookah. Можно принять, пока NPC сидит или идёт обратно на место. </summary>
     public void OnReceiveHookah()
     {
-        if (_state != State.SittingAtSeat) return;
-        if (PlayerCarry.Instance != null)
-            PlayerCarry.Instance.GiveHookah();
+        if (_state != State.SittingAtSeat && _state != State.WalkingToSeat) return;
         _currentHookahNpc = null;
         _assignedSpot?.OnHookahDelivered();
+        if (_state == State.WalkingToSeat)
+        {
+            _hookahReceivedWhileWalking = true;
+            return;
+        }
         _isSmokingHookah = true;
+        _smokingUntilTime = Time.time + smokingDurationRealSeconds;
         _nextHookahSmokeTime = Time.time + Random.Range(hookahSmokeInterval.x * 0.5f, hookahSmokeInterval.x);
     }
 
@@ -893,6 +984,48 @@ public class ClientNPC : MonoBehaviour
         go.SetActive(false);
     }
 
+    /// <summary> Точка, в которую NPC уйдёт при «отправить обратно» (обычно точка спавна). Задаётся спавнером. </summary>
+    public void SetExitPoint(Transform exitPoint)
+    {
+        _exitPoint = exitPoint;
+    }
+
+    /// <summary> Отправить NPC обратно (нет свободных мест). Идёт к точке выхода и исчезает по прибытии. </summary>
+    public void Dismiss()
+    {
+        if (_state != State.WaitingAtCounter) return;
+        if (_agent == null) { Destroy(gameObject); return; }
+        if (_exitPoint == null) { Destroy(gameObject); return; }
+        _state = State.WalkingBackToExit;
+        _agent.enabled = true;
+        _agent.SetDestination(_exitPoint.position);
+        _lastPositionForStuck = transform.position;
+        _lastStuckCheckTime = Time.time;
+    }
+
+    /// <summary> Сессия закончилась — встать и уйти к точке выхода (спавна), затем исчезнуть. Вызывает ComputerSpot после очистки места. </summary>
+    public void LeaveAndGoToExit()
+    {
+        if (_agent == null) { Destroy(gameObject); return; }
+        if (_exitPoint == null) { Destroy(gameObject); return; }
+
+        _agent.enabled = true;
+        if (_seatChair != null)
+        {
+            Vector3 standPos = _seatChair.position + _seatChair.forward * 0.5f;
+            transform.SetPositionAndRotation(standPos, _seatChair.rotation);
+        }
+        _seatChair = null;
+        _seatSitPoint = null;
+        EnsureOnNavMesh();
+        if (!_agent.isOnNavMesh) { Destroy(gameObject); return; }
+
+        _state = State.WalkingBackToExit;
+        _agent.SetDestination(_exitPoint.position);
+        _lastPositionForStuck = transform.position;
+        _lastStuckCheckTime = Time.time;
+    }
+
     /// <summary>
     /// Отправить NPC к стулу и посадить. Вызывается из ComputerSpot.SeatClient.
     /// sitPoint — дочерний объект стула, куда ставить NPC (позиция/поворот). Пусто — использовать стул + смещение.
@@ -900,13 +1033,11 @@ public class ClientNPC : MonoBehaviour
     public void GoSitAt(Transform chair, Transform sitPoint = null)
     {
         if (chair == null || _agent == null) return;
-        int id = gameObject.GetInstanceID();
         _seatChair = chair;
         _seatSitPoint = sitPoint;
         EnsureOnNavMesh();
         if (!_agent.isOnNavMesh)
             EnsureOnNavMeshForSeat(); // клиент у стойки мог быть чуть не на NavMesh — один раз подправляем
-        Debug.Log($"[NPC {id}] GoSitAt: chair.y={chair.position.y:F3}, после Ensure isOnNavMesh={_agent.isOnNavMesh}, pos.y={transform.position.y:F3}");
         if (_agent.isOnNavMesh)
         {
             _agent.SetDestination(chair.position);
@@ -915,7 +1046,7 @@ public class ClientNPC : MonoBehaviour
             _lastStuckCheckTime = Time.time;
         }
         else
-            Debug.LogWarning($"[NPC {id}] GoSitAt: агент не на NavMesh — не идёт к стулу! pos={transform.position}", this);
+            Debug.LogWarning("[ClientNPC] GoSitAt: агент не на NavMesh — не идёт к стулу.", this);
     }
 
     public State CurrentState => _state;
@@ -951,8 +1082,6 @@ public class ClientNPC : MonoBehaviour
 
         // Минимум 1 воспроизведение, максимум — без спама
         _phrasesLeftToPlay = UnityEngine.Random.Range(minPhraseCount, maxPhraseCount + 1);
-
-        Debug.Log($"ClientNPC: Реплика записана. Будет воспроизведена {_phrasesLeftToPlay} раз(а).");
     }
 
     /// <summary>
@@ -974,8 +1103,6 @@ public class ClientNPC : MonoBehaviour
         // Первая реплика — в первой трети окна (ранний старт, 100% успеет)
         float firstPhraseMax = deadlineHours * 0.33f;
         _nextPhraseElapsedHours = UnityEngine.Random.Range(0.005f, firstPhraseMax);
-
-        Debug.Log($"ClientNPC: Сессия {sessionDurationHours:F2}ч. Дедлайн реплик: {deadlineHours:F2}ч. Первая реплика в {_nextPhraseElapsedHours:F2}ч.");
     }
 
     float GetSessionElapsedHours()
@@ -1001,7 +1128,6 @@ public class ClientNPC : MonoBehaviour
         _phrasesLeftToPlay--;
 
         float clipLength = _recordedPhrase.length;
-        Debug.Log($"ClientNPC: Воспроизведение реплики. Осталось: {_phrasesLeftToPlay}");
 
         // Планируем следующую реплику в игровом времени (не позже дедлайна)
         if (_phrasesLeftToPlay > 0 && _gameTime != null)
