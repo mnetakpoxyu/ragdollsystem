@@ -102,7 +102,7 @@ public class ComputerSpot : MonoBehaviour
     [SerializeField] Transform hookahPlace;
     [Tooltip("Пустой объект на столе, куда ставится еда при доставке (бургер будет виден на столе).")]
     [SerializeField] Transform foodPlaceOnTable;
-    [Tooltip("Пустой объект в месте «рта» клиента за этим столом. Дым кальяна идёт из этой точки. Поворот объекта задаёт направление дыма в горизонтальной плоскости.")]
+    [Tooltip("Пустой объект в месте «рта» клиента за этим столом. Дым кальяна идёт из этой точки. Синяя стрелка (Forward/Z+) задаёт направление выдувания — поверни объект так, чтобы стрелка указывала вперёд (в сторону монитора).")]
     [SerializeField] Transform hookahMouthPoint;
 
     static Shader _outlineShader;
@@ -666,7 +666,9 @@ public class ComputerSpot : MonoBehaviour
         go.transform.localScale = Vector3.one;
 
         var ps = go.AddComponent<ParticleSystem>();
+        ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
         var main = ps.main;
+        main.playOnAwake = false;
         main.loop = true;
         main.duration = 5f;
         main.startLifetime = 2.8f;
@@ -676,7 +678,6 @@ public class ComputerSpot : MonoBehaviour
         main.simulationSpace = ParticleSystemSimulationSpace.World;
         main.maxParticles = 320;
         main.gravityModifier = -0.02f;
-        main.playOnAwake = true;
 
         var emission = ps.emission;
         emission.enabled = true;

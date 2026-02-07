@@ -29,7 +29,7 @@ public class ClientNPCSpawner : MonoBehaviour
     [Tooltip("Не спавним, если столько NPC уже идут к стойке или ждут у стойки. 0 = без лимита. Так спавн не блокируется: кто сел — освободил очередь.")]
     [SerializeField] int maxNpcsAtCounter = 6;
 
-    [Header("Таймер спавна (реальное время)")]
+    [Header("Таймер спавна (реальное время, не зависит от timeScale)")]
     [Tooltip("Задержка перед первым спавном (сек).")]
     [SerializeField] Vector2 firstSpawnDelay = new Vector2(3f, 8f);
     [Tooltip("Интервал между волнами: каждые 15–40 сек (рандом).")]
@@ -37,16 +37,18 @@ public class ClientNPCSpawner : MonoBehaviour
     [Tooltip("Сколько NPC спавнить за раз: 1 или 2 (рандом).")]
     [SerializeField] Vector2Int spawnCountPerWave = new Vector2Int(1, 2);
 
-    float _nextSpawnTime;
+    float _nextSpawnTimeUnscaled;
 
     void Start()
     {
-        _nextSpawnTime = Time.time + Random.Range(firstSpawnDelay.x, firstSpawnDelay.y);
+        float delayMin = Mathf.Clamp(firstSpawnDelay.x, 1f, 60f);
+        float delayMax = Mathf.Clamp(firstSpawnDelay.y, delayMin, 60f);
+        _nextSpawnTimeUnscaled = Time.unscaledTime + Random.Range(delayMin, delayMax);
     }
 
     void Update()
     {
-        if (Time.time < _nextSpawnTime) return;
+        if (Time.unscaledTime < _nextSpawnTimeUnscaled) return;
 
         ComputerSpot.ReconcileAllSpots();
 
@@ -54,12 +56,30 @@ public class ClientNPCSpawner : MonoBehaviour
         for (int i = 0; i < count; i++)
             TrySpawnOne();
 
-        _nextSpawnTime = Time.time + Random.Range(spawnInterval.x, spawnInterval.y);
+        float intervalMin = Mathf.Clamp(spawnInterval.x, 15f, 60f);
+        float intervalMax = Mathf.Clamp(spawnInterval.y, intervalMin, 60f);
+        _nextSpawnTimeUnscaled = Time.unscaledTime + Random.Range(intervalMin, intervalMax);
     }
 
     public void OnClientSentToComputer() { }
     public void OnClientLeftComputer() { }
     public void OnClientLeftCounter() { }
+
+    /// <summary> Точки спавна — NPC уходит сюда при LeaveAndGoToExit (возгорание, таймаут и т.д.). </summary>
+    public Transform[] SpawnPoints => spawnPoints;
+
+    GameObject GetRandomNonNullPrefab()
+    {
+        if (npcPrefabs == null || npcPrefabs.Length == 0) return null;
+        // Собираем индексы непустых префабов (на сцене могли оставить пустой слот)
+        int attempts = npcPrefabs.Length * 2;
+        while (attempts-- > 0)
+        {
+            var p = npcPrefabs[Random.Range(0, npcPrefabs.Length)];
+            if (p != null) return p;
+        }
+        return null;
+    }
 
     /// <summary> Спавн одного NPC. Идёт к стойке. Блокируем только если очередь у стойки переполнена (maxNpcsAtCounter). </summary>
     bool TrySpawnOne()
@@ -71,7 +91,7 @@ public class ClientNPCSpawner : MonoBehaviour
         Transform point = spawnPoints[Random.Range(0, spawnPoints.Length)];
         if (point == null) return false;
 
-        GameObject prefab = npcPrefabs[Random.Range(0, npcPrefabs.Length)];
+        GameObject prefab = GetRandomNonNullPrefab();
         if (prefab == null) return false;
 
         Vector3 pos = point.position + Vector3.up * heightOffset
@@ -81,15 +101,19 @@ public class ClientNPCSpawner : MonoBehaviour
         GameObject go = Object.Instantiate(prefab, pos, rot);
         ClientNPC npc = go.GetComponent<ClientNPC>();
 
+        ClientNPC template = templateNpc;
+        if (template == null)
+            template = Object.FindFirstObjectByType<ClientNPC>();
+
         if (npc == null)
         {
-            if (templateNpc == null)
+            if (template == null)
             {
-                Debug.LogError("[ClientNPCSpawner] Префаб без ClientNPC. Задай Template NPC.", prefab);
+                Debug.LogError("[ClientNPCSpawner] Префаб без ClientNPC. Задай Template NPC или добавь ClientNPC в префаб.", prefab);
                 Object.Destroy(go);
                 return false;
             }
-            AddComponentsFromTemplate(go, templateNpc);
+            AddComponentsFromTemplate(go, template);
             npc = go.GetComponent<ClientNPC>();
             if (npc == null)
             {
@@ -100,14 +124,14 @@ public class ClientNPCSpawner : MonoBehaviour
         }
         else
         {
-            if (go.GetComponent<NavMeshAgent>() == null && templateNpc != null)
-                CopyNavMeshAgentFrom(templateNpc.gameObject, go);
-            if (go.GetComponent<Collider>() == null && templateNpc != null)
-                CopyColliderFrom(templateNpc.gameObject, go);
+            if (go.GetComponent<NavMeshAgent>() == null && template != null)
+                CopyNavMeshAgentFrom(template.gameObject, go);
+            if (go.GetComponent<Collider>() == null && template != null)
+                CopyColliderFrom(template.gameObject, go);
         }
 
-        if (templateNpc != null)
-            npc.CopyConfigurationFrom(templateNpc);
+        if (template != null)
+            npc.CopyConfigurationFrom(template);
         npc.InitializeSpawn(adminSpot, doors);
         npc.ResetStateForSpawn();
         npc.SetExitPoint(point);

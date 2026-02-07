@@ -123,7 +123,6 @@ public class PlayerHQDVape : MonoBehaviour
     bool _inputBlocked => PlayerInputManager.Instance != null && PlayerInputManager.Instance.IsInputLocked;
 
     const string HqdChildName = "HQD";
-    static Texture2D _cachedSoftVaporTexture;
 
     void Start()
     {
@@ -308,63 +307,9 @@ public class PlayerHQDVape : MonoBehaviour
         var renderer = vaporGo.GetComponent<ParticleSystemRenderer>();
         if (renderer != null)
         {
-            SetupVaporRenderer(renderer, vaporColor);
+            VaporParticleSetup.SetupVaporRenderer(renderer, vaporColor);
         }
         ParticlesCollisionSetup.SetupCollisionAndSplash(_vaporInstance, vaporColor, addSplash: false, vaporIgnoreCollisionLayers);
-    }
-
-    static void SetupVaporRenderer(ParticleSystemRenderer renderer, Color tint)
-    {
-        // Свой шейдер с альфа-смешиванием (всегда в билде), затем запасные
-        Shader shader = Shader.Find("NewCore/VaporParticle")
-            ?? Shader.Find("Mobile/Particles/Alpha Blended")
-            ?? Shader.Find("Legacy Shaders/Particles/Alpha Blended Premultiply")
-            ?? Shader.Find("Universal Render Pipeline/Particles/Unlit")
-            ?? Shader.Find("Particles/Standard Unlit");
-        if (shader == null)
-        {
-            Debug.LogWarning("PlayerHQDVape: не найден шейдер для пара. Добавь NewCore/VaporParticle или Mobile/Particles/Alpha Blended в Always Included Shaders.");
-            return;
-        }
-        Material mat = new Material(shader);
-        mat.mainTexture = CreateSoftVaporTexture();
-        if (mat.HasProperty("_BaseColor"))
-            mat.SetColor("_BaseColor", tint);
-        else if (mat.HasProperty("_Color"))
-            mat.SetColor("_Color", tint);
-        mat.renderQueue = 3000;
-        renderer.material = mat;
-        renderer.renderMode = ParticleSystemRenderMode.Billboard;
-        renderer.alignment = ParticleSystemRenderSpace.View;
-        renderer.minParticleSize = 0.001f;
-        renderer.maxParticleSize = 10f;
-    }
-
-    /// <summary>
-    /// Жёсткая квадратная текстура пара: полностью непрозрачный квадрат, прозрачность снаружи.
-    /// </summary>
-    static Texture2D CreateSoftVaporTexture()
-    {
-        if (_cachedSoftVaporTexture != null) return _cachedSoftVaporTexture;
-        const int size = 256;
-        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
-        tex.wrapMode = TextureWrapMode.Clamp;
-        tex.filterMode = FilterMode.Point;
-        Color[] pixels = new Color[size * size];
-        int edge = 4; // отступ от края (внутри — квадрат)
-        for (int y = 0; y < size; y++)
-        {
-            for (int x = 0; x < size; x++)
-            {
-                bool inside = x >= edge && x < size - edge && y >= edge && y < size - edge;
-                float a = inside ? 1f : 0f;
-                pixels[y * size + x] = new Color(1f, 1f, 1f, a);
-            }
-        }
-        tex.SetPixels(pixels);
-        tex.Apply(true, true);
-        _cachedSoftVaporTexture = tex;
-        return tex;
     }
 
     void ApplyVaporColor(ParticleSystem ps, Color color)
@@ -545,6 +490,71 @@ public class PlayerHQDVape : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Выпустить пар из заданной точки рта (для NPC кальяна). Та же логика и вид, что у игрока.
+    /// Родитель = null, чтобы не наследовать scale от стола (иначе огромные багованные партиклы).
+    /// </summary>
+    public static GameObject EmitVaporAtMouth(Transform mouthPoint)
+    {
+        var vape = Object.FindFirstObjectByType<PlayerHQDVape>();
+        return vape != null ? vape.EmitVaporAtMouthInstance(mouthPoint) : null;
+    }
+
+    GameObject EmitVaporAtMouthInstance(Transform mouthPoint)
+    {
+        if (_vaporInstance == null || mouthPoint == null) return null;
+
+        float normalizedHold = 0.5f;
+        float countMul = 1f + Random.Range(-vaporCountRandomness, vaporCountRandomness);
+        int count = Mathf.RoundToInt(Mathf.Lerp(vaporMinParticles, vaporMaxParticles, normalizedHold) * countMul);
+        if (count <= 0) count = 800;
+
+        Vector3 worldMouth = mouthPoint.position;
+        Quaternion forwardRotation = mouthPoint.rotation;
+
+        // Без родителя — иначе scale стола даёт огромные партиклы
+        GameObject clone = Instantiate(_vaporInstance.gameObject, null);
+        clone.SetActive(false);
+        ParticleSystem ps = clone.GetComponent<ParticleSystem>();
+        if (ps == null) { Object.Destroy(clone); return null; }
+        ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+
+        clone.transform.position = worldMouth;
+        clone.transform.rotation = forwardRotation;
+        clone.transform.localScale = Vector3.one;
+
+        ComputerSpot.TryExtinguishAny(worldMouth, forwardRotation * Vector3.forward);
+
+        ApplyVaporForwardExhale(ps);
+        ApplyVaporExhaleDirection(ps, mouthPoint.forward);
+        ApplyVaporSoftMaterial(ps);
+        ApplyVaporColor(ps, vaporColor);
+        ParticlesCollisionSetup.SetupCollisionAndSplash(ps, vaporColor, addSplash: false, vaporIgnoreCollisionLayers, enableCollision: false);
+
+        float sizeBase = Mathf.Lerp(vaporMinStartSize, vaporMaxStartSize, normalizedHold);
+        float sizeMul = 1f + Random.Range(-vaporSizeRandomness, vaporSizeRandomness);
+        float sizeMin = sizeBase * sizeMul * 0.9f;
+        float sizeMax = sizeBase * sizeMul * 1.6f;
+
+        float exhaleDuration = Mathf.Min(vaporExhaleSpreadDuration, vaporEmitDuration);
+        float rate = count / Mathf.Max(0.01f, exhaleDuration);
+
+        var main = ps.main;
+        main.startSize = new ParticleSystem.MinMaxCurve(sizeMin, sizeMax);
+        main.duration = exhaleDuration;
+        main.loop = false;
+
+        var emission = ps.emission;
+        emission.enabled = true;
+        emission.rateOverTime = rate;
+        emission.SetBursts(new ParticleSystem.Burst[0]);
+
+        clone.SetActive(true);
+        ps.Play();
+        Object.Destroy(clone, 5.5f);
+        return clone;
+    }
+
     void PlayVapor(float holdDuration)
     {
         if (_vaporInstance == null) return;
@@ -683,7 +693,7 @@ public class PlayerHQDVape : MonoBehaviour
 
         var renderer = ringGo.GetComponent<ParticleSystemRenderer>();
         if (renderer != null)
-            SetupVaporRenderer(renderer, vaporColor);
+            VaporParticleSetup.SetupVaporRenderer(renderer, vaporColor);
 
         ringGo.SetActive(true);
 
@@ -742,8 +752,23 @@ public class PlayerHQDVape : MonoBehaviour
         velocityOverLifetime.enabled = true;
         velocityOverLifetime.space = ParticleSystemSimulationSpace.Local;
         velocityOverLifetime.z = new ParticleSystem.MinMaxCurve(1.2f, 2f);
-        velocityOverLifetime.x = new ParticleSystem.MinMaxCurve(-0.2f, 0.2f);
-        velocityOverLifetime.y = new ParticleSystem.MinMaxCurve(-0.2f, 0.2f);
+        velocityOverLifetime.x = new ParticleSystem.MinMaxCurve(-0.35f, 0.35f);
+        velocityOverLifetime.y = new ParticleSystem.MinMaxCurve(-0.35f, 0.35f);
+    }
+
+    /// <summary> Для NPC: задать направление выдоха в мировых координатах — пар уверенно выдувается вперёд. </summary>
+    void ApplyVaporExhaleDirection(ParticleSystem ps, Vector3 blowDirection)
+    {
+        if (ps == null) return;
+        Vector3 dir = blowDirection.sqrMagnitude >= 0.01f ? blowDirection.normalized : Vector3.forward;
+        float speed = 2.8f;
+        float spread = 0.25f;
+        var vol = ps.velocityOverLifetime;
+        vol.enabled = true;
+        vol.space = ParticleSystemSimulationSpace.World;
+        vol.x = new ParticleSystem.MinMaxCurve(dir.x * speed - spread, dir.x * speed + spread);
+        vol.y = new ParticleSystem.MinMaxCurve(dir.y * speed - spread, dir.y * speed + spread);
+        vol.z = new ParticleSystem.MinMaxCurve(dir.z * speed - spread, dir.z * speed + spread);
     }
 
     void ApplyVaporSoftMaterial(ParticleSystem ps)
@@ -751,6 +776,6 @@ public class PlayerHQDVape : MonoBehaviour
         if (ps == null) return;
         var renderer = ps.GetComponent<ParticleSystemRenderer>();
         if (renderer == null) return;
-        SetupVaporRenderer(renderer, Color.white);
+        VaporParticleSetup.SetupVaporRenderer(renderer, Color.white);
     }
 }

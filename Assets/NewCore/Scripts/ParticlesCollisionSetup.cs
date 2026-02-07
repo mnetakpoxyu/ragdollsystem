@@ -13,12 +13,13 @@ public static class ParticlesCollisionSetup
     /// <param name="splashColor">Цвет частиц распыления при ударе о стену (обычно как у пара/дыма).</param>
     /// <param name="addSplash">Добавить ли суб-эмиттер: при ударе о стену — маленькое облачко «по разным сторонам».</param>
     /// <param name="ignoreLayers">Слои, с которыми частицы НЕ сталкиваются (пар проходит сквозь них). Укажи слой игрока — пар будет проходить сквозь модель.</param>
-    public static void SetupCollisionAndSplash(ParticleSystem ps, Color splashColor, bool addSplash = true, LayerMask ignoreLayers = default)
+    /// <param name="enableCollision">Включить коллизию. false = пар не сталкивается ни с чем (для NPC кальяна — иначе застревает о стол).</param>
+    public static void SetupCollisionAndSplash(ParticleSystem ps, Color splashColor, bool addSplash = true, LayerMask ignoreLayers = default, bool enableCollision = true)
     {
         if (ps == null) return;
 
         var collision = ps.collision;
-        collision.enabled = true;
+        collision.enabled = enableCollision;
         collision.type = ParticleSystemCollisionType.World;
         collision.mode = ParticleSystemCollisionMode.Collision3D;
         collision.dampen = new ParticleSystem.MinMaxCurve(0.92f);   // почти вся скорость теряется при ударе — пар «останавливается» о стену

@@ -60,6 +60,18 @@ public class BoomboxInteractable : MonoBehaviour
         _source.maxDistance = maxDistance;
         _targetVolume = Mathf.Clamp(initialVolume, minVolume, maxVolume);
         _source.volume = 0f;
+        PreloadTracks();
+    }
+
+    void PreloadTracks()
+    {
+        if (tracks == null) return;
+        for (int i = 0; i < tracks.Length; i++)
+        {
+            if (tracks[i] == null) continue;
+            if (tracks[i].loadState == AudioDataLoadState.Unloaded && !tracks[i].loadInBackground)
+                tracks[i].LoadAudioData();
+        }
     }
 
     /// <summary> Текст подсказки: при выключенной магнитоле — «Включить», при включённой — все действия со стрелками. </summary>

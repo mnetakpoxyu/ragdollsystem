@@ -105,16 +105,14 @@ public class ClientNPC : MonoBehaviour
     [SerializeField] float wantHookahMinRealSeconds = 25f;
     [Tooltip("Проверять желание кальяна каждые N реальных секунд.")]
     [SerializeField] float wantHookahCheckInterval = 7f;
-    [Tooltip("Префаб пара/дыма изо рта (как от вейпа). Пусто — создаётся простой дым в коде.")]
-    [SerializeField] ParticleSystem hookahSmokePrefab;
-    [Tooltip("Смещение «рта» для дыма относительно pivot NPC (высота, вперёд).")]
-    [SerializeField] Vector3 mouthOffset = new Vector3(0f, 1.1f, 0.15f);
-    [Tooltip("Интервал между «затяжками» дыма (сек). Случайный выбор в этом диапазоне — чаще и разнообразнее.")]
-    [SerializeField] Vector2 hookahSmokeInterval = new Vector2(0.8f, 2.2f);
     [Tooltip("Сколько реальных секунд клиент «ест» после получения еды. В это время не бросаются ивенты напиток/еда/кальян (ремонт возможен).")]
     [SerializeField] float eatingDurationRealSeconds = 60f;
     [Tooltip("Сколько реальных секунд клиент «курит» после получения кальяна. В это время ивенты напиток/еда/кальян не бросаются.")]
     [SerializeField] float smokingDurationRealSeconds = 180f;
+    [Tooltip("Минимальный интервал между выдохами пара кальяна (сек). Пар выпускается из точки рта (Hookah Mouth Point на ComputerSpot).")]
+    [SerializeField] float hookahVaporIntervalMin = 4f;
+    [Tooltip("Максимальный интервал между выдохами пара кальяна (сек).")]
+    [SerializeField] float hookahVaporIntervalMax = 8f;
 
     NavMeshAgent _agent;
     Animator _anim;
@@ -150,12 +148,11 @@ public class ClientNPC : MonoBehaviour
     float _lastHookahCheckTime = -1f;
     static ClientNPC _currentHookahNpc;
     bool _isSmokingHookah;
-    float _nextHookahSmokeTime;
-    ParticleSystem _hookahSmokeInstance;
     bool _foodReceivedWhileWalking;
     bool _hookahReceivedWhileWalking;
     float _eatingUntilTime = -1f;
     float _smokingUntilTime = -1f;
+    float _nextHookahVaporTime = -1f;
     Transform _exitPoint;
     float _waitingAtCounterSince = -1f;
     float _waitingAtCounterTimeoutSec = -1f;
@@ -430,7 +427,6 @@ public class ClientNPC : MonoBehaviour
                             _hookahReceivedWhileWalking = false;
                             _isSmokingHookah = true;
                             _smokingUntilTime = Time.time + smokingDurationRealSeconds;
-                            _nextHookahSmokeTime = Time.time + Random.Range(hookahSmokeInterval.x * 0.5f, hookahSmokeInterval.x);
                         }
                     }
                     else if (stuckCheckInterval > 0f && Time.time - _lastStuckCheckTime >= stuckCheckInterval)
@@ -447,6 +443,18 @@ public class ClientNPC : MonoBehaviour
                 }
                 if (_smokingUntilTime > 0f && Time.time >= _smokingUntilTime)
                     _smokingUntilTime = -1f;
+
+                // Пар кальяна: выпускаем периодически из точки рта (Hookah Mouth Point у ComputerSpot)
+                if (_isSmokingHookah && _smokingUntilTime > 0f && Time.time < _smokingUntilTime && _assignedSpot != null)
+                {
+                    if (_nextHookahVaporTime < 0f)
+                        _nextHookahVaporTime = Time.time + Random.Range(hookahVaporIntervalMin, hookahVaporIntervalMax);
+                    if (Time.time >= _nextHookahVaporTime)
+                    {
+                        PlayHookahVapor();
+                        _nextHookahVaporTime = Time.time + Random.Range(hookahVaporIntervalMin, hookahVaporIntervalMax);
+                    }
+                }
 
                 // Нельзя идти за напитком/едой/кальяном во время еды или курения; ремонт возможен. Нельзя, если уже сломался компьютер.
                 if (_assignedSpot != null && !_assignedSpot.IsClientGoneForDrink && !_assignedSpot.IsClientGoneForFood && !_assignedSpot.IsClientGoneForHookah && !_assignedSpot.IsBreakdownInProgress && !IsEatingOrSmoking)
@@ -490,11 +498,6 @@ public class ClientNPC : MonoBehaviour
                             }
                         }
                     }
-                }
-                if (_isSmokingHookah && Time.time >= _nextHookahSmokeTime)
-                {
-                    _nextHookahSmokeTime = Time.time + Random.Range(hookahSmokeInterval.x, hookahSmokeInterval.y);
-                    EmitHookahSmoke();
                 }
                 // Воспроизводим реплики во время игровой сессии (по игровому времени)
                 bool isCurrentlyPlaying = _isPlayingPhrase || (_audioSource != null && _audioSource.isPlaying);
@@ -629,11 +632,10 @@ public class ClientNPC : MonoBehaviour
         wantHookahChancePerSession = other.wantHookahChancePerSession;
         wantHookahMinRealSeconds = other.wantHookahMinRealSeconds;
         wantHookahCheckInterval = other.wantHookahCheckInterval;
-        hookahSmokePrefab = other.hookahSmokePrefab;
-        mouthOffset = other.mouthOffset;
-        hookahSmokeInterval = other.hookahSmokeInterval;
         eatingDurationRealSeconds = other.eatingDurationRealSeconds;
         smokingDurationRealSeconds = other.smokingDurationRealSeconds;
+        hookahVaporIntervalMin = other.hookahVaporIntervalMin;
+        hookahVaporIntervalMax = other.hookahVaporIntervalMax;
         // Заново взять агент и применить настройки (важно для спавненных префабов: агент мог быть null в Awake или добавлен позже)
         _agent = GetComponent<NavMeshAgent>();
         if (_agent != null)
@@ -696,6 +698,7 @@ public class ClientNPC : MonoBehaviour
         _hookahReceivedWhileWalking = false;
         _eatingUntilTime = -1f;
         _smokingUntilTime = -1f;
+        _nextHookahVaporTime = -1f;
         _sitDownRealTime = -1f;
         _prevAnimState = (State)(-1);
         if (_anim != null)
@@ -896,98 +899,21 @@ public class ClientNPC : MonoBehaviour
         }
         _isSmokingHookah = true;
         _smokingUntilTime = Time.time + smokingDurationRealSeconds;
-        _nextHookahSmokeTime = Time.time + Random.Range(hookahSmokeInterval.x * 0.5f, hookahSmokeInterval.x);
     }
 
-    void EmitHookahSmoke()
+    /// <summary> Выпустить пар кальяна из точки рта (Hookah Mouth Point у ComputerSpot). Скопирована логика из PlayerHQDVape — пар такой же, как у игрока. </summary>
+    void PlayHookahVapor()
     {
         Transform mouthPoint = _assignedSpot != null ? _assignedSpot.HookahMouthPoint : null;
-        Vector3 mouthPos = mouthPoint != null ? mouthPoint.position : transform.TransformPoint(mouthOffset);
-        Quaternion mouthRot = mouthPoint != null ? mouthPoint.rotation : transform.rotation;
-        if (hookahSmokePrefab != null)
-        {
-            var go = Instantiate(hookahSmokePrefab.gameObject, mouthPos, mouthRot);
-            var ps = go.GetComponent<ParticleSystem>();
-            if (ps != null) ps.Play();
-            Destroy(go, 4f);
-            return;
-        }
-        if (_hookahSmokeInstance == null)
-            CreateHookahSmokeInstance();
-        if (_hookahSmokeInstance != null)
-        {
-            _hookahSmokeInstance.gameObject.SetActive(true);
-            _hookahSmokeInstance.Play();
-        }
-    }
+        if (mouthPoint == null) return;
 
-    void CreateHookahSmokeInstance()
-    {
-        var go = new GameObject("HookahSmoke");
-        Transform mouthPoint = _assignedSpot != null ? _assignedSpot.HookahMouthPoint : null;
-        if (mouthPoint != null)
+        var smokeGo = PlayerHQDVape.EmitVaporAtMouth(mouthPoint);
+        if (smokeGo == null)
         {
-            go.transform.SetParent(mouthPoint);
-            go.transform.localPosition = Vector3.zero;
-            go.transform.localRotation = Quaternion.identity;
-            _assignedSpot.RegisterHookahSmoke(go);
+            smokeGo = VaporParticleSetup.EmitHookahVaporAt(mouthPoint, null);
         }
-        else
-        {
-            go.transform.SetParent(transform);
-            go.transform.localPosition = mouthOffset;
-            go.transform.localRotation = Quaternion.identity;
-        }
-        _hookahSmokeInstance = go.AddComponent<ParticleSystem>();
-        var main = _hookahSmokeInstance.main;
-        main.duration = 2.8f;
-        main.loop = false;
-        main.startLifetime = 4f;
-        main.startSpeed = new ParticleSystem.MinMaxCurve(0.12f, 0.35f);
-        main.startSize = new ParticleSystem.MinMaxCurve(0.18f, 0.32f);
-        main.startColor = new Color(0.92f, 0.92f, 0.96f, 0.45f);
-        main.simulationSpace = ParticleSystemSimulationSpace.World;
-        main.maxParticles = 1200;
-        main.gravityModifier = 0.008f;
-        var emission = _hookahSmokeInstance.emission;
-        emission.enabled = true;
-        emission.rateOverTime = 85f;
-        emission.SetBursts(System.Array.Empty<ParticleSystem.Burst>());
-        var shape = _hookahSmokeInstance.shape;
-        shape.enabled = true;
-        shape.shapeType = ParticleSystemShapeType.Cone;
-        shape.angle = 8f;
-        shape.radius = 0.02f;
-        var vel = _hookahSmokeInstance.velocityOverLifetime;
-        vel.enabled = true;
-        vel.space = ParticleSystemSimulationSpace.Local;
-        vel.z = new ParticleSystem.MinMaxCurve(0.4f, 0.7f);
-        vel.x = new ParticleSystem.MinMaxCurve(-0.18f, 0.18f);
-        vel.y = new ParticleSystem.MinMaxCurve(-0.18f, 0.18f);
-        var noise = _hookahSmokeInstance.noise;
-        noise.enabled = true;
-        noise.strength = 0.35f;
-        noise.frequency = 0.4f;
-        noise.scrollSpeed = 0.2f;
-        noise.damping = true;
-        noise.octaveCount = 2;
-        noise.quality = ParticleSystemNoiseQuality.Medium;
-        var colorOverLifetime = _hookahSmokeInstance.colorOverLifetime;
-        colorOverLifetime.enabled = true;
-        var grad = new Gradient();
-        grad.SetKeys(
-            new[] { new GradientColorKey(Color.white, 0f), new GradientColorKey(Color.white, 1f) },
-            new[] { new GradientAlphaKey(0.4f, 0f), new GradientAlphaKey(0.2f, 0.4f), new GradientAlphaKey(0f, 1f) });
-        colorOverLifetime.color = grad;
-        var renderer = go.GetComponent<ParticleSystemRenderer>();
-        if (renderer != null)
-        {
-            renderer.material = new Material(Shader.Find("Legacy Shaders/Particles/Alpha Blended Premultiply") ?? Shader.Find("Particles/Standard Unlit"));
-            if (renderer.material.HasProperty("_Color")) renderer.material.SetColor("_Color", new Color(1f, 1f, 1f, 0.5f));
-            renderer.renderMode = ParticleSystemRenderMode.Billboard;
-        }
-        ParticlesCollisionSetup.SetupCollisionAndSplash(_hookahSmokeInstance, new Color(0.92f, 0.92f, 0.96f, 0.45f), true);
-        go.SetActive(false);
+        if (smokeGo != null && _assignedSpot != null)
+            _assignedSpot.RegisterHookahSmoke(smokeGo);
     }
 
     /// <summary> Точка, в которую NPC уйдёт при «отправить обратно» (обычно точка спавна). Задаётся спавнером. </summary>
@@ -1013,7 +939,16 @@ public class ClientNPC : MonoBehaviour
     public void LeaveAndGoToExit()
     {
         if (_agent == null) { Destroy(gameObject); return; }
-        if (_exitPoint == null) { Destroy(gameObject); return; }
+
+        if (_exitPoint == null)
+        {
+            var spawner = UnityEngine.Object.FindFirstObjectByType<ClientNPCSpawner>();
+            if (spawner != null && spawner.SpawnPoints != null && spawner.SpawnPoints.Length > 0)
+            {
+                _exitPoint = spawner.SpawnPoints[UnityEngine.Random.Range(0, spawner.SpawnPoints.Length)];
+            }
+            if (_exitPoint == null) { Destroy(gameObject); return; }
+        }
 
         _agent.enabled = true;
         if (_seatChair != null)
@@ -1024,6 +959,13 @@ public class ClientNPC : MonoBehaviour
         _seatChair = null;
         _seatSitPoint = null;
         EnsureOnNavMesh();
+        if (!_agent.isOnNavMesh && _exitPoint != null)
+        {
+            if (NavMesh.SamplePosition(_exitPoint.position, out NavMeshHit hit, 3f, NavMesh.AllAreas))
+            {
+                _agent.Warp(hit.position + Vector3.up * 0.05f);
+            }
+        }
         if (!_agent.isOnNavMesh) { Destroy(gameObject); return; }
 
         _state = State.WalkingBackToExit;
