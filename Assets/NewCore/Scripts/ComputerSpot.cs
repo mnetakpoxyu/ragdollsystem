@@ -62,8 +62,8 @@ public class ComputerSpot : MonoBehaviour
     [SerializeField] bool isOccupied;
 
     [Header("Поломка компьютера")]
-    [Tooltip("Вероятность поломки за сессию (0–1). Может не выпасть ни разу за игру.")]
-    [SerializeField, Range(0f, 1f)] float breakdownChancePerSession = 0.4f;
+    [Tooltip("Вероятность поломки за сессию (0–1). Для 5 мест: 0.18 ≈ ~1 поломка на сцену за сессию.")]
+    [SerializeField, Range(0f, 1f)] float breakdownChancePerSession = 0.18f;
     [Tooltip("Сколько секунд (реального времени) у админа на починку, пока клиент ждёт. Не успел — клиент уходит, комп сломан.")]
     [SerializeField] float repairTimeLimitSeconds = 45f;
     [Tooltip("Минимальная доля сессии (0–1), после которой может выпасть поломка (чтобы клиент успел сесть).")]
@@ -132,6 +132,8 @@ public class ComputerSpot : MonoBehaviour
     [SerializeField] float priceMonitor = 150f;
     [Tooltip("Цена докупки стола (весь сетап). Если украли стол — платить эту сумму.")]
     [SerializeField] float priceTable = 500f;
+    [Tooltip("Зона докупки: коллайдер для взаимодействия, когда стол украден. Перетащи Empty с BoxCollider — он будет активен только при украденном столе. Пусто — создаётся автоматически на стуле.")]
+    [SerializeField] Collider buyBackCollider;
 
     static Shader _outlineShader;
     static Shader OutlineShader => _outlineShader != null ? _outlineShader : (_outlineShader = Shader.Find("NewCore/Outline Contour"));
@@ -1108,7 +1110,38 @@ public class ComputerSpot : MonoBehaviour
         return sum;
     }
 
-    /// <summary> Применить визуал украденного: скрыть объекты по флагам _stolen*. Если украден стол — скрываем стол и все девайсы. </summary>
+    /// <summary> Цена одного предмета (для штрафа при поимке вора). </summary>
+    public float GetItemPrice(StolenItemType item)
+    {
+        switch (item)
+        {
+            case StolenItemType.Mouse: return priceMouse;
+            case StolenItemType.Keyboard: return priceKeyboard;
+            case StolenItemType.Computer: return priceComputer;
+            case StolenItemType.Monitor: return priceMonitor;
+            case StolenItemType.Table: return priceTable;
+            default: return 0f;
+        }
+    }
+
+    /// <summary> Вернуть один украденный предмет (при поимке вора). </summary>
+    public void RestoreStolenItem(StolenItemType item)
+    {
+        switch (item)
+        {
+            case StolenItemType.Mouse: _stolenMouse = false; break;
+            case StolenItemType.Keyboard: _stolenKeyboard = false; break;
+            case StolenItemType.Computer: _stolenComputer = false; break;
+            case StolenItemType.Monitor: _stolenMonitor = false; break;
+            case StolenItemType.Table: _stolenTable = false; break;
+        }
+        ApplyStolenState();
+        SetHighlight(_highlighted);
+        var spawner = FindFirstObjectByType<ClientNPCSpawner>();
+        spawner?.OnClientLeftComputer();
+    }
+
+    /// <summary> Применить визуал украденного: скрыть объекты по флагам _stolen*. Если украден стол — скрываем стол и все девайсы. Включаем зону докупки. </summary>
     void ApplyStolenState()
     {
         if (tableVisual != null)
@@ -1121,6 +1154,45 @@ public class ComputerSpot : MonoBehaviour
             computerVisual.gameObject.SetActive(!_stolenComputer && !_stolenTable);
         if (monitorVisual != null)
             monitorVisual.gameObject.SetActive(!_stolenMonitor && !_stolenTable);
+
+        // Зона докупки: при украденном столе нужен коллайдер для взаимодействия
+        EnsureBuyBackCollider();
+    }
+
+    GameObject _runtimeBuyBackZone;
+
+    void EnsureBuyBackCollider()
+    {
+        if (!_stolenTable)
+        {
+            if (buyBackCollider != null)
+                buyBackCollider.enabled = false;
+            if (_runtimeBuyBackZone != null)
+                _runtimeBuyBackZone.SetActive(false);
+            return;
+        }
+        if (buyBackCollider != null)
+        {
+            buyBackCollider.enabled = true;
+            return;
+        }
+        if (_runtimeBuyBackZone != null)
+        {
+            _runtimeBuyBackZone.SetActive(true);
+            return;
+        }
+        var go = new GameObject("BuyBackZone");
+        go.transform.SetParent(transform);
+        go.transform.localPosition = chair != null && tableVisual != null
+            ? transform.InverseTransformPoint(tableVisual.position + Vector3.up * 0.5f)
+            : (chair != null ? transform.InverseTransformPoint(chair.position + Vector3.up * 0.5f + chair.forward * 0.4f) : Vector3.zero);
+        go.transform.localRotation = Quaternion.identity;
+        go.transform.localScale = Vector3.one;
+        go.layer = gameObject.layer;
+        var box = go.AddComponent<BoxCollider>();
+        box.size = new Vector3(1.2f, 1.2f, 1.2f);
+        box.isTrigger = true;
+        _runtimeBuyBackZone = go;
     }
 
     /// <summary> Вор-клиент украл предмет. Скрываем визуал, вешаем копию вору за спину (как рюкзак), завершаем сессию, клиент уходит. </summary>
@@ -1160,11 +1232,12 @@ public class ComputerSpot : MonoBehaviour
             copy.transform.localPosition = Vector3.zero;
             copy.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
             copy.transform.localScale = Vector3.one * scaleOnBack;
-            int layer = thief.gameObject.layer;
-            copy.layer = layer;
-            for (int i = 0; i < copy.transform.childCount; i++)
-                SetLayerRecursively(copy.transform.GetChild(i), layer);
+            // Слой Ignore Raycast — предмет за спиной вора не попадает в прицел, нельзя «взаимодействовать со столом»
+            int ignoreRaycastLayer = LayerMask.NameToLayer("Ignore Raycast");
+            if (ignoreRaycastLayer < 0) ignoreRaycastLayer = 2; // Unity default
+            SetLayerRecursively(copy.transform, ignoreRaycastLayer);
             DisableCollidersRecursively(copy.transform);
+            thief.SetStolenItem(this, item);
         }
 
         DestroyTimer();

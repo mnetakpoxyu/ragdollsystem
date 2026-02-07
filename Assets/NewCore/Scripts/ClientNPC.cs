@@ -85,42 +85,42 @@ public class ClientNPC : MonoBehaviour
     [SerializeField] float lastPhraseBufferMinutes = 10f;
 
     [Header("Ивенты (минимум после посадки)")]
-    [Tooltip("Минимум реальных секунд после посадки, прежде чем может прокнуть ЛЮБОЙ ивент (поломка, еда, напиток, кальян, туалет, вор).")]
-    [SerializeField] float minSitSecondsBeforeAnyEvent = 7f;
+    [Tooltip("Минимум реальных секунд после посадки, прежде чем может прокнуть ивент (еда, напиток, кальян, туалет). После возвращения после отказа — тот же кулдаун.")]
+    [SerializeField] float minSitSecondsBeforeAnyEvent = 25f;
 
     [Header("Напиток (рандом за сессию)")]
     [Tooltip("Вероятность, что NPC захочет попить за сессию (0–1). Только один NPC одновременно может идти за напитком.")]
-    [SerializeField, Range(0f, 1f)] float wantDrinkChancePerSession = 0.4f;
+    [SerializeField, Range(0f, 1f)] float wantDrinkChancePerSession = 0.28f;
     [Tooltip("Минимальное время в реальных секундах, что NPC должен посидеть, прежде чем может захотеть попить.")]
-    [SerializeField] float wantDrinkMinRealSeconds = 15f;
+    [SerializeField] float wantDrinkMinRealSeconds = 30f;
     [Tooltip("Проверять желание попить каждые N реальных секунд (чтобы не проверять каждый кадр).")]
-    [SerializeField] float wantDrinkCheckInterval = 5f;
+    [SerializeField] float wantDrinkCheckInterval = 8f;
 
     [Header("Еда (рандом за сессию)")]
     [Tooltip("Вероятность, что NPC захочет поесть за сессию (0–1). Только один NPC одновременно может идти за едой.")]
-    [SerializeField, Range(0f, 1f)] float wantFoodChancePerSession = 0.35f;
+    [SerializeField, Range(0f, 1f)] float wantFoodChancePerSession = 0.22f;
     [Tooltip("Минимальное время в реальных секундах, что NPC должен посидеть, прежде чем может захотеть поесть.")]
-    [SerializeField] float wantFoodMinRealSeconds = 20f;
+    [SerializeField] float wantFoodMinRealSeconds = 40f;
     [Tooltip("Проверять желание поесть каждые N реальных секунд.")]
-    [SerializeField] float wantFoodCheckInterval = 6f;
+    [SerializeField] float wantFoodCheckInterval = 10f;
 
     [Header("Туалет (рандом за сессию)")]
     [Tooltip("Вероятность, что NPC захочет в туалет за сессию (0–1). Несколько NPC могут идти в туалет одновременно (по числу туалетов).")]
-    [SerializeField, Range(0f, 1f)] float wantToiletChancePerSession = 0.25f;
+    [SerializeField, Range(0f, 1f)] float wantToiletChancePerSession = 0.18f;
     [Tooltip("Минимальное время в реальных секундах, что NPC должен посидеть, прежде чем может захотеть в туалет.")]
-    [SerializeField] float wantToiletMinRealSeconds = 30f;
+    [SerializeField] float wantToiletMinRealSeconds = 45f;
     [Tooltip("Проверять желание в туалет каждые N реальных секунд.")]
-    [SerializeField] float wantToiletCheckInterval = 8f;
+    [SerializeField] float wantToiletCheckInterval = 12f;
     [Tooltip("Сколько реальных секунд NPC «в туалете» (15–20).")]
     [SerializeField] Vector2 toiletDurationSeconds = new Vector2(15f, 20f);
 
     [Header("Кальян (рандом за сессию)")]
     [Tooltip("Вероятность, что NPC захочет покурить кальян за сессию (0–1). Только один NPC одновременно может идти за кальяном.")]
-    [SerializeField, Range(0f, 1f)] float wantHookahChancePerSession = 0.3f;
+    [SerializeField, Range(0f, 1f)] float wantHookahChancePerSession = 0.2f;
     [Tooltip("Минимальное время в реальных секундах, что NPC должен посидеть, прежде чем может захотеть кальян.")]
-    [SerializeField] float wantHookahMinRealSeconds = 25f;
+    [SerializeField] float wantHookahMinRealSeconds = 35f;
     [Tooltip("Проверять желание кальяна каждые N реальных секунд.")]
-    [SerializeField] float wantHookahCheckInterval = 7f;
+    [SerializeField] float wantHookahCheckInterval = 9f;
     [Tooltip("Сколько реальных секунд клиент «ест» после получения еды. В это время не бросаются ивенты напиток/еда/кальян (ремонт возможен).")]
     [SerializeField] float eatingDurationRealSeconds = 60f;
     [Tooltip("Сколько реальных секунд клиент «курит» после получения кальяна. В это время ивенты напиток/еда/кальян не бросаются.")]
@@ -131,12 +131,12 @@ public class ClientNPC : MonoBehaviour
     [SerializeField] float hookahVaporIntervalMax = 8f;
 
     [Header("Вор (кража за сессию)")]
-    [Tooltip("Вероятность, что этот NPC окажется вором (0–1). 1 = все воры (для теста). Итог: шанс кражи = шанс вора × шанс кражи за сессию.")]
-    [SerializeField, Range(0f, 1f)] float thiefChancePerNpc = 1f;
-    [Tooltip("Если NPC вор: вероятность что украдёт за эту сессию (0–1). 1 = всегда крадёт (для теста).")]
-    [SerializeField, Range(0f, 1f)] float theftChancePerSession = 1f;
+    [Tooltip("Вероятность, что этот NPC окажется вором (0–1). Для 5 NPC: 0.2 ≈ 1 вор на сцену.")]
+    [SerializeField, Range(0f, 1f)] float thiefChancePerNpc = 0.2f;
+    [Tooltip("Если NPC вор: вероятность что украдёт за эту сессию (0–1).")]
+    [SerializeField, Range(0f, 1f)] float theftChancePerSession = 0.45f;
     [Tooltip("Минимальное время в реальных секундах после посадки, через которое вор может украсть (не зависит от игровых часов).")]
-    [SerializeField, Min(0f)] float theftMinRealSeconds = 3f;
+    [SerializeField, Min(0f)] float theftMinRealSeconds = 45f;
     [Tooltip("Точка за спиной, куда вешается украденный предмет (как рюкзак). Пусто — создаётся автоматически по смещению.")]
     [SerializeField] Transform backAttachmentPoint;
     [Tooltip("Смещение точки «за спиной» от корня NPC (м), если Back Attachment Point не задан. Y = высота, Z = назад (отрицательный = за спиной).")]
@@ -194,6 +194,8 @@ public class ClientNPC : MonoBehaviour
     bool _reachedToiletEntrance;
     bool _returningFromToilet; // WC висит пока не сядем; ResumeSessionForToilet вызываем при посадке
     Renderer[] _npcRenderers;
+    ComputerSpot _stolenFromSpot;
+    ComputerSpot.StolenItemType _stolenItemType;
 
     bool IsEatingOrSmoking => (_eatingUntilTime > 0f && Time.time < _eatingUntilTime) || (_smokingUntilTime > 0f && Time.time < _smokingUntilTime);
 
@@ -861,7 +863,12 @@ public class ClientNPC : MonoBehaviour
         _toiletExitTime = -1f;
         _reachedToiletEntrance = false;
         _returningFromToilet = false;
+        _stolenFromSpot = null;
         _prevAnimState = (State)(-1);
+
+        // Убрать предметы за спиной — никогда не спавним с девайсами (если префаб/темплейт был вором)
+        ClearBackAttachment();
+
         if (_anim != null)
         {
             _anim.Rebind();
@@ -869,6 +876,19 @@ public class ClientNPC : MonoBehaviour
             if (!string.IsNullOrEmpty(idleParam)) _anim.SetBool(idleParam, true);
             if (!string.IsNullOrEmpty(sittingParam)) _anim.SetBool(sittingParam, false);
         }
+    }
+
+    /// <summary> Убрать все предметы за спиной (украденные девайсы). Вызывается при спавне. </summary>
+    void ClearBackAttachment()
+    {
+        var back = backAttachmentPoint != null ? backAttachmentPoint : _runtimeBackAttachment;
+        if (back == null) return;
+        for (int i = back.childCount - 1; i >= 0; i--)
+        {
+            var child = back.GetChild(i);
+            Destroy(child.gameObject);
+        }
+        back.gameObject.SetActive(false);
     }
 
     /// <summary>
@@ -1152,6 +1172,39 @@ public class ClientNPC : MonoBehaviour
         if (_currentHookahNpc == this) _currentHookahNpc = null;
     }
 
+    /// <summary> Вор уходит с украденным предметом — игрок может поймать (E), взять штраф и вернуть предмет. </summary>
+    public bool IsThiefWithStolenItem => _state == State.WalkingBackToExit && _stolenFromSpot != null;
+    /// <summary> Спот, откуда украли (для подсказки штрафа). </summary>
+    public ComputerSpot StolenFromSpot => _stolenFromSpot;
+    /// <summary> Тип украденного предмета. </summary>
+    public ComputerSpot.StolenItemType StolenItemType => _stolenItemType;
+
+    /// <summary> Запомнить, откуда и что украли (для поимки вора). </summary>
+    public void SetStolenItem(ComputerSpot spot, ComputerSpot.StolenItemType item)
+    {
+        _stolenFromSpot = spot;
+        _stolenItemType = item;
+    }
+
+    /// <summary> Игрок поймал вора (E): штраф, предмет возвращается на место. Вор идёт дальше к выходу (без предмета на спине). </summary>
+    public void OnCaughtByPlayer()
+    {
+        if (!IsThiefWithStolenItem || _stolenFromSpot == null) return;
+        float fine = _stolenFromSpot.GetItemPrice(_stolenItemType);
+        if (PlayerBalance.Instance != null && fine > 0f)
+            PlayerBalance.Instance.Add(fine);
+        _stolenFromSpot.RestoreStolenItem(_stolenItemType);
+        _stolenFromSpot = null;
+
+        var back = GetBackAttachmentPoint();
+        for (int i = back.childCount - 1; i >= 0; i--)
+        {
+            var child = back.GetChild(i);
+            UnityEngine.Object.Destroy(child.gameObject);
+        }
+        back.gameObject.SetActive(false);
+    }
+
     /// <summary> Точка за спиной для крепления украденного предмета (как рюкзак). Если не задана в инспекторе — создаётся по смещению. </summary>
     public Transform GetBackAttachmentPoint()
     {
@@ -1224,6 +1277,7 @@ public class ClientNPC : MonoBehaviour
     public void GoSitAt(Transform chair, Transform sitPoint = null)
     {
         if (chair == null || _agent == null) return;
+        _sitDownRealTime = -1f; // сброс таймера — кулдаун начнётся когда реально сядет
         _seatChair = chair;
         _seatSitPoint = sitPoint;
         EnsureOnNavMesh();

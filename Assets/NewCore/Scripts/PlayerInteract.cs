@@ -353,11 +353,13 @@ public class PlayerInteract : MonoBehaviour
         ClientNPC hungryClient = (hitClient != null && hitClient.CurrentState == ClientNPC.State.WaitingForFood) ? hitClient : null;
         // Клиент ждёт решение по кальяну (стоит у стойки, подсказка «хочет курить»)
         ClientNPC hookahClient = (hitClient != null && hitClient.CurrentState == ClientNPC.State.WaitingForHookah) ? hitClient : null;
+        // Вор уходит с украденным — можно поймать
+        ClientNPC thiefWithStolen = (hitClient != null && hitClient.IsThiefWithStolenItem) ? hitClient : null;
 
         bool showingVoiceHint = _clientWaitingToSeat != null && _currentClient == _clientWaitingToSeat &&
             (_voiceRecordState == VoiceRecordState.Idle || _voiceRecordState == VoiceRecordState.Recording || _voiceRecordState == VoiceRecordState.HasRecording);
 
-        bool showHint = _currentDoor != null || _currentClient != null || thirstyClient != null || hungryClient != null || hookahClient != null || (_currentSpot != null && _currentSpot.IsClientGoneForFood && PlayerCarry.Instance != null && PlayerCarry.Instance.HasBurger) || (_currentSpot != null && _currentSpot.IsClientGoneForHookah && PlayerCarry.Instance != null && PlayerCarry.Instance.HasHookah) || _currentSpot != null || _currentMonitor != null || _currentBoombox != null || _currentDrinkStock != null || _currentFoodStock != null || _currentHookahStock != null || showingVoiceHint;
+        bool showHint = _currentDoor != null || _currentClient != null || thirstyClient != null || hungryClient != null || hookahClient != null || thiefWithStolen != null || (_currentSpot != null && _currentSpot.IsClientGoneForFood && PlayerCarry.Instance != null && PlayerCarry.Instance.HasBurger) || (_currentSpot != null && _currentSpot.IsClientGoneForHookah && PlayerCarry.Instance != null && PlayerCarry.Instance.HasHookah) || _currentSpot != null || _currentMonitor != null || _currentBoombox != null || _currentDrinkStock != null || _currentFoodStock != null || _currentHookahStock != null || showingVoiceHint;
         if (showHint && _currentSpot != null && (_currentSpot.IsBreakdownInProgress || _currentSpot.IsBroken) && RepairMinigameUI.IsActive)
             showHint = false;
         if (hintText != null)
@@ -405,6 +407,11 @@ public class PlayerInteract : MonoBehaviour
                 else if (_currentMonitor != null)
                 {
                     hintText.text = "Смотреть камеры  [E]";
+                }
+                else if (thiefWithStolen != null)
+                {
+                    float fine = thiefWithStolen.StolenFromSpot != null ? thiefWithStolen.StolenFromSpot.GetItemPrice(thiefWithStolen.StolenItemType) : 0f;
+                    hintText.text = string.Format("Оштрафовать и вернуть  [E]  (+{0:F0} ₽)", fine);
                 }
                 else if (thirstyClient != null)
                 {
@@ -628,6 +635,11 @@ public class PlayerInteract : MonoBehaviour
                 return;
             }
 
+            if (thiefWithStolen != null)
+            {
+                thiefWithStolen.OnCaughtByPlayer();
+                return;
+            }
             if (_currentSpot != null && _currentSpot.HasAnyStolen)
             {
                 float cost = _currentSpot.GetMissingItemsCost();
