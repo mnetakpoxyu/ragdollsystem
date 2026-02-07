@@ -73,6 +73,17 @@ public class NeonLamp : MonoBehaviour
         _renderers = affectChildren ? GetComponentsInChildren<Renderer>(true) : GetComponents<Renderer>();
         if (_renderers == null || _renderers.Length == 0) return;
 
+        if (!Application.isPlaying)
+        {
+            for (int i = 0; i < _renderers.Length; i++)
+            {
+                if (_renderers[i] == null) continue;
+                ApplyEmission(_renderers[i].sharedMaterial);
+            }
+            _materialInstances = null;
+            return;
+        }
+
         if (_materialInstances != null && _materialInstances.Length == _renderers.Length)
         {
             for (int i = 0; i < _materialInstances.Length; i++)
@@ -174,7 +185,12 @@ public class NeonLamp : MonoBehaviour
             for (int i = 0; i < _materialInstances.Length; i++)
             {
                 if (_materialInstances[i] != null)
-                    Destroy(_materialInstances[i]);
+                {
+                    if (Application.isPlaying)
+                        Destroy(_materialInstances[i]);
+                    else
+                        DestroyImmediate(_materialInstances[i]);
+                }
             }
         }
     }
