@@ -322,6 +322,13 @@ public class PlayerInteract : MonoBehaviour
         if (effectiveClient != _currentClient)
             _currentClient = effectiveClient;
 
+        // Увёл прицел с того, с кем был в шаге R/E — сбрасываем ему заказ и очередь, он снова как новый (по E заново пройти шаг).
+        if (_clientWaitingToSeat != null && _currentClient != _clientWaitingToSeat)
+        {
+            _clientWaitingToSeat.ResetOrderState();
+            ClearVoiceState();
+        }
+
         if (hitSpot != _currentSpot)
         {
             if (_currentSpot != null)
@@ -376,7 +383,9 @@ public class PlayerInteract : MonoBehaviour
                 }
                 else if (_currentSpot != null)
                 {
-                    if (_currentSpot.IsOnFire)
+                    if (_currentSpot.HasAnyStolen)
+                        hintText.text = string.Format("Докупить  {0:F0} ₽  [E]", _currentSpot.GetMissingItemsCost());
+                    else if (_currentSpot.IsOnFire)
                         hintText.text = HintExtinguishVape + _currentSpot.ExtinguishHitsRemaining;
                     else if (_currentSpot.IsClientGoneForFood && PlayerCarry.Instance != null && PlayerCarry.Instance.HasBurger)
                         hintText.text = "Принести еду  [E]";
@@ -386,8 +395,10 @@ public class PlayerInteract : MonoBehaviour
                         hintText.text = (repairMinigameUI != null) ? HintRepairMinigame : HintRepair;
                     else if (!_currentSpot.IsOccupied && !_currentSpot.IsBroken && _clientWaitingToSeat != null && _clientWaitingToSeat.AssignedSpot == _currentSpot)
                         hintText.text = HintSeatClient;
-                    else if (_currentSpot.IsOccupied && _currentSpot.IsClientSittingAtSeat)
+                    else if (_currentSpot.IsOccupied && _currentSpot.IsClientSittingAtSeat && !PlayerHasSomethingInHands())
                         hintText.text = HintEjectClient;
+                    else if (_currentSpot.IsOccupied && _currentSpot.IsClientSittingAtSeat && PlayerHasSomethingInHands())
+                        hintText.text = "Положите предмет — выгнать нельзя";
                     else
                         hintText.text = _currentSpot.IsOccupied ? HintOccupied : HintFree;
                 }
@@ -610,7 +621,17 @@ public class PlayerInteract : MonoBehaviour
                 return;
             }
 
-            if (_currentSpot != null && _currentSpot.IsOccupied && _currentSpot.IsClientSittingAtSeat)
+            if (_currentSpot != null && _currentSpot.HasAnyStolen)
+            {
+                float cost = _currentSpot.GetMissingItemsCost();
+                if (PlayerBalance.Instance != null && cost > 0f && PlayerBalance.Instance.Balance >= cost)
+                {
+                    PlayerBalance.Instance.Add(-cost);
+                    _currentSpot.RestoreAllStolen();
+                }
+                return;
+            }
+            if (_currentSpot != null && _currentSpot.IsOccupied && _currentSpot.IsClientSittingAtSeat && !PlayerHasSomethingInHands())
             {
                 _currentSpot.EjectSeatedClient();
                 return;
@@ -728,6 +749,12 @@ public class PlayerInteract : MonoBehaviour
             spawner?.OnClientSentToComputer();
             Debug.Log("PlayerInteract: Клиент отправлен к назначенному месту.");
         }
+    }
+
+    /// <summary> Есть ли у игрока что-то в руках (напиток, еда, кальян). С предметом в руках выгонять клиента нельзя. </summary>
+    bool PlayerHasSomethingInHands()
+    {
+        return PlayerCarry.Instance != null && (PlayerCarry.Instance.HasDrink || PlayerCarry.Instance.HasBurger || PlayerCarry.Instance.HasHookah);
     }
 
     /// <summary> Нажатие по «переходу»: сейчас нажата и в прошлом кадре не была — не зависит от wasPressedThisFrame. </summary>

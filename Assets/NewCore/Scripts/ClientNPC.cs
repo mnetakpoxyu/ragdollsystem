@@ -114,6 +114,18 @@ public class ClientNPC : MonoBehaviour
     [Tooltip("Максимальный интервал между выдохами пара кальяна (сек).")]
     [SerializeField] float hookahVaporIntervalMax = 8f;
 
+    [Header("Вор (кража за сессию)")]
+    [Tooltip("Вероятность, что этот NPC окажется вором (0–1). 1 = все воры (для теста). Итог: шанс кражи = шанс вора × шанс кражи за сессию.")]
+    [SerializeField, Range(0f, 1f)] float thiefChancePerNpc = 1f;
+    [Tooltip("Если NPC вор: вероятность что украдёт за эту сессию (0–1). 1 = всегда крадёт (для теста).")]
+    [SerializeField, Range(0f, 1f)] float theftChancePerSession = 1f;
+    [Tooltip("Минимальное время в реальных секундах после посадки, через которое вор может украсть (не зависит от игровых часов).")]
+    [SerializeField, Min(0f)] float theftMinRealSeconds = 3f;
+    [Tooltip("Точка за спиной, куда вешается украденный предмет (как рюкзак). Пусто — создаётся автоматически по смещению.")]
+    [SerializeField] Transform backAttachmentPoint;
+    [Tooltip("Смещение точки «за спиной» от корня NPC (м), если Back Attachment Point не задан. Y = высота, Z = назад (отрицательный = за спиной).")]
+    [SerializeField] Vector3 backAttachmentOffset = new Vector3(0f, 1.05f, -0.45f);
+
     NavMeshAgent _agent;
     Animator _anim;
     State _state = State.WaitingAtDoor;
@@ -156,6 +168,9 @@ public class ClientNPC : MonoBehaviour
     Transform _exitPoint;
     float _waitingAtCounterSince = -1f;
     float _waitingAtCounterTimeoutSec = -1f;
+    bool _isThief;
+    bool _theftRolled;
+    Transform _runtimeBackAttachment;
 
     bool IsEatingOrSmoking => (_eatingUntilTime > 0f && Time.time < _eatingUntilTime) || (_smokingUntilTime > 0f && Time.time < _smokingUntilTime);
 
@@ -435,7 +450,10 @@ public class ClientNPC : MonoBehaviour
                 break;
             case State.SittingAtSeat:
                 if (_sitDownRealTime < 0f)
+                {
                     _sitDownRealTime = Time.time;
+                    _isThief = Random.value < thiefChancePerNpc;
+                }
                 if (_eatingUntilTime > 0f && Time.time >= _eatingUntilTime)
                 {
                     _eatingUntilTime = -1f;
@@ -457,9 +475,10 @@ public class ClientNPC : MonoBehaviour
                 }
 
                 // Нельзя идти за напитком/едой/кальяном во время еды или курения; ремонт возможен. Нельзя, если уже сломался компьютер.
+                // Несколько ивентов параллельно: кто-то за водой, кто-то за едой, кто-то за кальяном — проверяем только свой тип.
                 if (_assignedSpot != null && !_assignedSpot.IsClientGoneForDrink && !_assignedSpot.IsClientGoneForFood && !_assignedSpot.IsClientGoneForHookah && !_assignedSpot.IsBreakdownInProgress && !IsEatingOrSmoking)
                 {
-                    if (!_drinkRolled && _currentThirstyNpc == null && _currentHungryNpc == null && _currentHookahNpc == null)
+                    if (!_drinkRolled && _currentThirstyNpc == null)
                     {
                         float satFor = Time.time - _sitDownRealTime;
                         if (satFor >= wantDrinkMinRealSeconds && (Time.time - _lastDrinkCheckTime) >= wantDrinkCheckInterval)
@@ -472,7 +491,7 @@ public class ClientNPC : MonoBehaviour
                             }
                         }
                     }
-                    if (!_foodRolled && _currentThirstyNpc == null && _currentHungryNpc == null && _currentHookahNpc == null)
+                    if (!_foodRolled && _currentHungryNpc == null)
                     {
                         float satFor = Time.time - _sitDownRealTime;
                         if (satFor >= wantFoodMinRealSeconds && (Time.time - _lastFoodCheckTime) >= wantFoodCheckInterval)
@@ -485,7 +504,7 @@ public class ClientNPC : MonoBehaviour
                             }
                         }
                     }
-                    if (!_hookahRolled && _currentThirstyNpc == null && _currentHungryNpc == null && _currentHookahNpc == null)
+                    if (!_hookahRolled && _currentHookahNpc == null)
                     {
                         float satFor = Time.time - _sitDownRealTime;
                         if (satFor >= wantHookahMinRealSeconds && (Time.time - _lastHookahCheckTime) >= wantHookahCheckInterval)
@@ -496,6 +515,21 @@ public class ClientNPC : MonoBehaviour
                                 _hookahRolled = true;
                                 RequestHookah();
                             }
+                        }
+                    }
+                }
+                // Ивент: вор крадёт предмет (мышь, клавиатуру, комп, монитор или весь стол). Проверка по реальному времени — через theftMinRealSeconds после посадки.
+                if (_isThief && !_theftRolled && _assignedSpot != null && _sitDownRealTime >= 0f)
+                {
+                    float satRealSeconds = Time.time - _sitDownRealTime;
+                    if (satRealSeconds >= theftMinRealSeconds)
+                    {
+                        _theftRolled = true;
+                        if (Random.value < theftChancePerSession)
+                        {
+                            ComputerSpot.StolenItemType item = _assignedSpot.GetRandomStealableType();
+                            _assignedSpot.OnStolenBy(this, item);
+                            return;
                         }
                     }
                 }
@@ -636,6 +670,10 @@ public class ClientNPC : MonoBehaviour
         smokingDurationRealSeconds = other.smokingDurationRealSeconds;
         hookahVaporIntervalMin = other.hookahVaporIntervalMin;
         hookahVaporIntervalMax = other.hookahVaporIntervalMax;
+        thiefChancePerNpc = other.thiefChancePerNpc;
+        theftChancePerSession = other.theftChancePerSession;
+        theftMinRealSeconds = other.theftMinRealSeconds;
+        backAttachmentOffset = other.backAttachmentOffset;
         // Заново взять агент и применить настройки (важно для спавненных префабов: агент мог быть null в Awake или добавлен позже)
         _agent = GetComponent<NavMeshAgent>();
         if (_agent != null)
@@ -716,6 +754,13 @@ public class ClientNPC : MonoBehaviour
     public void AssignSpot(ComputerSpot spot)
     {
         _assignedSpot = spot;
+    }
+
+    /// <summary> Сбросить заказ у стойки (игрок увёл прицел на другого — этот NPC снова как «новый», по E нужно заново назначить место и R/E). </summary>
+    public void ResetOrderState()
+    {
+        _hasOrdered = false;
+        _assignedSpot = null;
     }
 
     /// <summary>
@@ -941,6 +986,22 @@ public class ClientNPC : MonoBehaviour
         if (_currentThirstyNpc == this) _currentThirstyNpc = null;
         if (_currentHungryNpc == this) _currentHungryNpc = null;
         if (_currentHookahNpc == this) _currentHookahNpc = null;
+    }
+
+    /// <summary> Точка за спиной для крепления украденного предмета (как рюкзак). Если не задана в инспекторе — создаётся по смещению. </summary>
+    public Transform GetBackAttachmentPoint()
+    {
+        if (backAttachmentPoint != null) return backAttachmentPoint;
+        if (_runtimeBackAttachment == null)
+        {
+            var go = new GameObject("BackAttachment");
+            go.transform.SetParent(transform);
+            go.transform.localPosition = backAttachmentOffset;
+            go.transform.localRotation = Quaternion.identity;
+            go.transform.localScale = Vector3.one;
+            _runtimeBackAttachment = go.transform;
+        }
+        return _runtimeBackAttachment;
     }
 
     /// <summary> Сессия закончилась — встать и уйти к точке выхода (спавна), затем исчезнуть. Вызывает ComputerSpot после очистки места. </summary>

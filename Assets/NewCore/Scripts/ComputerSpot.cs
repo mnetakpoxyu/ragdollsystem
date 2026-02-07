@@ -105,6 +105,28 @@ public class ComputerSpot : MonoBehaviour
     [Tooltip("Пустой объект в месте «рта» клиента за этим столом. Дым кальяна идёт из этой точки. Синяя стрелка (Forward/Z+) задаёт направление выдувания — поверни объект так, чтобы стрелка указывала вперёд (в сторону монитора).")]
     [SerializeField] Transform hookahMouthPoint;
 
+    [Header("Кража (вор-клиент)")]
+    [Tooltip("Стол (или весь сетап: стол + монитор, комп, мышь, клавиатура). При краже стола — скрывается целиком, остаётся только стул. Перетащи сюда корневой объект стола/сетапа.")]
+    [SerializeField] Transform tableVisual;
+    [Tooltip("Визуал мыши (дочерний или отдельный объект). При краже — скрывается только он.")]
+    [SerializeField] Transform mouseVisual;
+    [Tooltip("Визуал клавиатуры.")]
+    [SerializeField] Transform keyboardVisual;
+    [Tooltip("Визуал системного блока (корпус).")]
+    [SerializeField] Transform computerVisual;
+    [Tooltip("Визуал монитора.")]
+    [SerializeField] Transform monitorVisual;
+    [Tooltip("Цена докупки мыши (₽).")]
+    [SerializeField] float priceMouse = 50f;
+    [Tooltip("Цена докупки клавиатуры (₽).")]
+    [SerializeField] float priceKeyboard = 80f;
+    [Tooltip("Цена докупки системного блока (₽).")]
+    [SerializeField] float priceComputer = 200f;
+    [Tooltip("Цена докупки монитора (₽).")]
+    [SerializeField] float priceMonitor = 150f;
+    [Tooltip("Цена докупки стола (весь сетап). Если украли стол — платить эту сумму.")]
+    [SerializeField] float priceTable = 500f;
+
     static Shader _outlineShader;
     static Shader OutlineShader => _outlineShader != null ? _outlineShader : (_outlineShader = Shader.Find("NewCore/Outline Contour"));
 
@@ -121,8 +143,8 @@ public class ComputerSpot : MonoBehaviour
         _allSpots.Remove(this);
     }
 
-    /// <summary> Может ли это место принять клиента (есть стул). </summary>
-    public bool CanSeatClient => chair != null;
+    /// <summary> Может ли это место принять клиента (есть стул и комп не украден). </summary>
+    public bool CanSeatClient => chair != null && IsComputerComplete;
 
     /// <summary> Количество мест, которые могут принять клиентов (есть стул). </summary>
     public static int GetSeatableSpotCount()
@@ -944,7 +966,7 @@ public class ComputerSpot : MonoBehaviour
         _highlighted = on;
         if (_outlineRenderers == null || _outlineMaterial == null) return;
         Color c;
-        if (isBroken || _breakdownInProgress)
+        if (HasAnyStolen || isBroken || _breakdownInProgress)
             c = brokenOutlineColor;
         else if (_clientGoneForFood || _clientGoneForHookah)
             c = waitingForFoodOutlineColor;
@@ -994,6 +1016,163 @@ public class ComputerSpot : MonoBehaviour
     /// <summary> Сейчас идёт поломка: клиент сидит, над головой таймер починки. Успел починить — клиент остаётся. </summary>
     public bool IsBreakdownInProgress => _breakdownInProgress;
 
+    /// <summary> Тип украденного предмета (вор-клиент). </summary>
+    public enum StolenItemType { Mouse, Keyboard, Computer, Monitor, Table }
+
+    /// <summary> Есть ли хотя бы один украденный элемент. Место нельзя занять, пока не докупишь. </summary>
+    public bool HasAnyStolen => _stolenMouse || _stolenKeyboard || _stolenComputer || _stolenMonitor || _stolenTable;
+
+    /// <summary> Компьютерный сетап цел (ничего не украдено). Нужно для CanSeatClient. </summary>
+    public bool IsComputerComplete => !HasAnyStolen;
+
+    /// <summary> Сумма за докупку всех украденных элементов (₽). </summary>
+    public float GetMissingItemsCost()
+    {
+        float sum = 0f;
+        if (_stolenMouse) sum += priceMouse;
+        if (_stolenKeyboard) sum += priceKeyboard;
+        if (_stolenComputer) sum += priceComputer;
+        if (_stolenMonitor) sum += priceMonitor;
+        if (_stolenTable) sum += priceTable;
+        return sum;
+    }
+
+    /// <summary> Применить визуал украденного: скрыть объекты по флагам _stolen*. Если украден стол — скрываем стол и все девайсы. </summary>
+    void ApplyStolenState()
+    {
+        if (tableVisual != null)
+            tableVisual.gameObject.SetActive(!_stolenTable);
+        if (mouseVisual != null)
+            mouseVisual.gameObject.SetActive(!_stolenMouse && !_stolenTable);
+        if (keyboardVisual != null)
+            keyboardVisual.gameObject.SetActive(!_stolenKeyboard && !_stolenTable);
+        if (computerVisual != null)
+            computerVisual.gameObject.SetActive(!_stolenComputer && !_stolenTable);
+        if (monitorVisual != null)
+            monitorVisual.gameObject.SetActive(!_stolenMonitor && !_stolenTable);
+    }
+
+    /// <summary> Вор-клиент украл предмет. Скрываем визуал, вешаем копию вору за спину (как рюкзак), завершаем сессию, клиент уходит. </summary>
+    public void OnStolenBy(ClientNPC thief, StolenItemType item)
+    {
+        switch (item)
+        {
+            case StolenItemType.Mouse: _stolenMouse = true; break;
+            case StolenItemType.Keyboard: _stolenKeyboard = true; break;
+            case StolenItemType.Computer: _stolenComputer = true; break;
+            case StolenItemType.Monitor: _stolenMonitor = true; break;
+            case StolenItemType.Table:
+                _stolenTable = true;
+                break;
+        }
+        ApplyStolenState();
+
+        // За спиной вора виден только тот предмет, который украли: стол = только стол, мышь = только мышь и т.д.
+        Transform visualToCopy = null;
+        float scaleOnBack = 0.8f;
+        switch (item)
+        {
+            case StolenItemType.Mouse: visualToCopy = mouseVisual; scaleOnBack = 0.9f; break;
+            case StolenItemType.Keyboard: visualToCopy = keyboardVisual; scaleOnBack = 0.9f; break;
+            case StolenItemType.Computer: visualToCopy = computerVisual; scaleOnBack = 0.6f; break;
+            case StolenItemType.Monitor: visualToCopy = monitorVisual; scaleOnBack = 0.55f; break;
+            case StolenItemType.Table: visualToCopy = tableVisual; scaleOnBack = 0.28f; break;
+        }
+        if (visualToCopy != null && thief != null)
+        {
+            Transform back = thief.GetBackAttachmentPoint();
+            back.gameObject.SetActive(true);
+            GameObject copy = Instantiate(visualToCopy.gameObject);
+            copy.name = "Stolen_" + visualToCopy.gameObject.name;
+            copy.SetActive(true);
+            copy.transform.SetParent(back, false);
+            copy.transform.localPosition = Vector3.zero;
+            copy.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
+            copy.transform.localScale = Vector3.one * scaleOnBack;
+            int layer = thief.gameObject.layer;
+            copy.layer = layer;
+            for (int i = 0; i < copy.transform.childCount; i++)
+                SetLayerRecursively(copy.transform.GetChild(i), layer);
+            DisableCollidersRecursively(copy.transform);
+        }
+
+        DestroyTimer();
+        _breakdownInProgress = false;
+        ClearPlacedHookah();
+        ClearPlacedFood();
+        _clientGoneForDrink = false;
+        _clientGoneForFood = false;
+        _clientGoneForHookah = false;
+        _foodDeliveryTimeRemaining = -1f;
+        ClientNPC client = _seatedClient;
+        _seatedClient = null;
+        isOccupied = false;
+        SetHighlight(_highlighted);
+
+        if (client != null)
+            client.LeaveAndGoToExit();
+        var spawner = FindFirstObjectByType<ClientNPCSpawner>();
+        spawner?.OnClientLeftComputer();
+    }
+
+    static void SetLayerRecursively(Transform t, int layer)
+    {
+        t.gameObject.layer = layer;
+        for (int i = 0; i < t.childCount; i++)
+            SetLayerRecursively(t.GetChild(i), layer);
+    }
+
+    /// <summary> Отключить коллайдеры у объекта и детей — предмет за спиной вора чисто визуальный, в прицел не попадает. </summary>
+    static void DisableCollidersRecursively(Transform t)
+    {
+        var col = t.GetComponent<Collider>();
+        if (col != null) col.enabled = false;
+        for (int i = 0; i < t.childCount; i++)
+            DisableCollidersRecursively(t.GetChild(i));
+    }
+
+    /// <summary> Игрок докупил всё украденное. Восстанавливаем визуалы. </summary>
+    public void RestoreAllStolen()
+    {
+        if (!HasAnyStolen) return;
+        _stolenMouse = false;
+        _stolenKeyboard = false;
+        _stolenComputer = false;
+        _stolenMonitor = false;
+        _stolenTable = false;
+        ApplyStolenState();
+        SetHighlight(_highlighted);
+        var spawner = FindFirstObjectByType<ClientNPCSpawner>();
+        spawner?.OnClientLeftComputer();
+    }
+
+    /// <summary> Можно ли украсть данный тип (есть визуал и он ещё не украден). Для выбора ивента вора. </summary>
+    public bool CanSteal(StolenItemType item)
+    {
+        switch (item)
+        {
+            case StolenItemType.Mouse: return mouseVisual != null && !_stolenMouse && !_stolenTable;
+            case StolenItemType.Keyboard: return keyboardVisual != null && !_stolenKeyboard && !_stolenTable;
+            case StolenItemType.Computer: return computerVisual != null && !_stolenComputer && !_stolenTable;
+            case StolenItemType.Monitor: return monitorVisual != null && !_stolenMonitor && !_stolenTable;
+            case StolenItemType.Table: return tableVisual != null && !_stolenTable;
+            default: return false;
+        }
+    }
+
+    /// <summary> Случайный тип кражи, который можно совершить на этом месте (или Table если ничего по отдельности нет). </summary>
+    public StolenItemType GetRandomStealableType()
+    {
+        var list = new List<StolenItemType>();
+        if (CanSteal(StolenItemType.Mouse)) list.Add(StolenItemType.Mouse);
+        if (CanSteal(StolenItemType.Keyboard)) list.Add(StolenItemType.Keyboard);
+        if (CanSteal(StolenItemType.Computer)) list.Add(StolenItemType.Computer);
+        if (CanSteal(StolenItemType.Monitor)) list.Add(StolenItemType.Monitor);
+        if (CanSteal(StolenItemType.Table)) list.Add(StolenItemType.Table);
+        if (list.Count == 0) return StolenItemType.Table;
+        return list[Random.Range(0, list.Count)];
+    }
+
     bool isBroken;
     bool _breakdownInProgress;
     float _breakdownTimerRemaining;
@@ -1003,10 +1182,16 @@ public class ComputerSpot : MonoBehaviour
     int _extinguishHitsCount;
     GameObject _fireVfxInstance;
 
-    /// <summary> Посадить клиента за этот стол. NPC пойдёт к стулу и сядет. Возвращает true, если место было свободно. За сломанный стол сажать нельзя — сначала починить. Баланс зачисляется при посадке. </summary>
+    bool _stolenMouse;
+    bool _stolenKeyboard;
+    bool _stolenComputer;
+    bool _stolenMonitor;
+    bool _stolenTable;
+
+    /// <summary> Посадить клиента за этот стол. NPC пойдёт к стулу и сядет. Возвращает true, если место было свободно. За сломанный или обворованный стол сажать нельзя. Баланс зачисляется при посадке. </summary>
     public bool SeatClient(ClientNPC npc)
     {
-        if (npc == null || isOccupied || isBroken || chair == null || !npc.HasOrdered) return false;
+        if (npc == null || isOccupied || isBroken || HasAnyStolen || chair == null || !npc.HasOrdered) return false;
         npc.GoSitAt(chair, npcSitPoint);
         _seatedClient = npc;
         _sessionDurationHours = npc.RequestedSessionHours;
