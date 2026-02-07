@@ -637,7 +637,7 @@ MonoBehaviour:
   interactLayers:
     serializedVersion: 2
     m_Bits: 4294967295
-  inputActionAsset: {fileID: 11400000, guid: 052faaac586de48259a63d0c4782560b, type: 2}
+  inputActionAsset: {fileID: 11400000, guid: 31c30643284fe4b0d9c4ee49f734c6ba, type: 2}
   hintText: {fileID: 0}
   hintFont: {fileID: 0}
 --- !u!1 &6383853509585082905

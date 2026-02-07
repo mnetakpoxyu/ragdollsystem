@@ -81,6 +81,8 @@ public class PlayerInteract : MonoBehaviour
     void Start()
     {
         _cam = GetComponent<Camera>();
+        if (inputActionAsset == null)
+            inputActionAsset = InputSystemRuntimeFallback.GetDefaultAsset();
         if (inputActionAsset != null)
         {
             var map = inputActionAsset.FindActionMap("Player");
@@ -657,7 +659,7 @@ public class PlayerInteract : MonoBehaviour
             }
 
             if (_currentBoombox != null)
-                ; // управление магнитолой — по клавишам из компонента магнитолы
+            { } // управление магнитолой — по клавишам из компонента магнитолы
             else if (_currentDoor != null)
                 _currentDoor.Open();
             else if (_currentClient != null && _currentClient.CurrentState == ClientNPC.State.WaitingAtCounter && !_currentClient.HasOrdered && ComputerSpot.GetFreeSpotsList().Count == 0)

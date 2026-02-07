@@ -26,6 +26,10 @@ public class PlayerHQDVape : MonoBehaviour
     [Tooltip("Слой, на который вешается HQD — только твоя камера должна его рендерить. Создай слой типа FirstPersonOnly, добавь его в Culling Mask своей камеры; камеры других игроков его не рендерят — HQD видят только ты.")]
     [SerializeField] int localOnlyLayer = 0;
 
+    [Header("Коллизия пара")]
+    [Tooltip("Слои, сквозь которые пар проходит без столкновения. Добавь слой модели игрока — пар не будет застревать и ломаться, когда бежишь в него. Edit → Project Settings → Tags and Layers: создай слой Player и назначь его телу персонажа.")]
+    [SerializeField] LayerMask vaporIgnoreCollisionLayers;
+
     [Header("Лимит затяжки")]
     [Tooltip("Максимальное время затяжки в секундах. После этого затяжка автоматически прекращается.")]
     [SerializeField] float maxHoldTime = 5f;
@@ -65,9 +69,9 @@ public class PlayerHQDVape : MonoBehaviour
     [Tooltip("Смещение точки появления пара относительно рта (локально).")]
     [SerializeField] Vector3 vaporLocalOffset = new Vector3(0f, 0f, 0.05f);
     [Tooltip("Размер частиц при короткой затяжке — облако меньше.")]
-    [SerializeField] float vaporMinStartSize = 0.25f;
+    [SerializeField] float vaporMinStartSize = 0.65f;
     [Tooltip("Размер частиц при полной затяжке — облако намного больше.")]
-    [SerializeField] float vaporMaxStartSize = 0.95f;
+    [SerializeField] float vaporMaxStartSize = 2.2f;
     [Tooltip("Случайный разброс размера облака при каждом выдохе (0 = одинаково, 0.25 = ±25%).")]
     [SerializeField, Range(0f, 0.5f)] float vaporSizeRandomness = 0.22f;
     [Tooltip("Случайный разброс количества частиц при каждом выдохе (0 = одинаково, 0.2 = ±20%).")]
@@ -89,7 +93,7 @@ public class PlayerHQDVape : MonoBehaviour
     [Tooltip("Количество частиц по контуру кольца (меньше = меньше нагрузка, 48–64 обычно хватает).")]
     [SerializeField, Min(24)] int ringParticleCount = 52;
     [Tooltip("Размер одной частицы — при малом количестве частиц можно увеличить для плотного кольца.")]
-    [SerializeField, Min(0.01f)] float ringParticleSize = 0.24f;
+    [SerializeField, Min(0.01f)] float ringParticleSize = 0.55f;
     [Tooltip("Время жизни кольца (сек), затем плавно исчезает.")]
     [SerializeField, Min(0.5f)] float ringLifetime = 2.2f;
 
@@ -274,9 +278,9 @@ public class PlayerHQDVape : MonoBehaviour
         var velocityOverLifetime = _vaporInstance.velocityOverLifetime;
         velocityOverLifetime.enabled = true;
         velocityOverLifetime.space = ParticleSystemSimulationSpace.Local;
-        velocityOverLifetime.z = 5f;
-        velocityOverLifetime.x = new ParticleSystem.MinMaxCurve(-0.06f, 0.06f);
-        velocityOverLifetime.y = new ParticleSystem.MinMaxCurve(-0.06f, 0.06f);
+        velocityOverLifetime.z = new ParticleSystem.MinMaxCurve(1.2f, 2f);
+        velocityOverLifetime.x = new ParticleSystem.MinMaxCurve(-0.25f, 0.25f);
+        velocityOverLifetime.y = new ParticleSystem.MinMaxCurve(-0.25f, 0.25f);
 
         var noise = _vaporInstance.noise;
         noise.enabled = true;
@@ -293,32 +297,41 @@ public class PlayerHQDVape : MonoBehaviour
         var grad = new Gradient();
         grad.SetKeys(
             new[] { new GradientColorKey(c, 0f), new GradientColorKey(c, 1f) },
-            new[] { new GradientAlphaKey(c.a * 0.92f, 0f), new GradientAlphaKey(c.a * 0.65f, 0.35f), new GradientAlphaKey(0f, 1f) }
-        );
+            new[] { new GradientAlphaKey(c.a * 0.92f, 0f), new GradientAlphaKey(c.a * 0.65f, 0.35f), new GradientAlphaKey(0f, 1f) });
         colorOverLifetime.color = grad;
 
         var sizeOverLifetime = _vaporInstance.sizeOverLifetime;
         sizeOverLifetime.enabled = true;
         sizeOverLifetime.size = new ParticleSystem.MinMaxCurve(1f, new AnimationCurve(
-            new Keyframe(0f, 0.4f), new Keyframe(0.15f, 1.2f), new Keyframe(0.4f, 1.4f), new Keyframe(0.7f, 0.9f), new Keyframe(1f, 0f)));
+            new Keyframe(0f, 0.5f), new Keyframe(0.12f, 1.15f), new Keyframe(0.35f, 1.5f), new Keyframe(0.7f, 1f), new Keyframe(1f, 0f)));
 
         var renderer = vaporGo.GetComponent<ParticleSystemRenderer>();
         if (renderer != null)
         {
             SetupVaporRenderer(renderer, vaporColor);
         }
-        ParticlesCollisionSetup.SetupCollisionAndSplash(_vaporInstance, vaporColor, true);
+        ParticlesCollisionSetup.SetupCollisionAndSplash(_vaporInstance, vaporColor, addSplash: false, vaporIgnoreCollisionLayers);
     }
 
     static void SetupVaporRenderer(ParticleSystemRenderer renderer, Color tint)
     {
-        Shader shader = Shader.Find("Legacy Shaders/Particles/Alpha Blended Premultiply")
-            ?? Shader.Find("Particles/Standard Unlit")
-            ?? Shader.Find("Mobile/Particles/Alpha Blended");
-        if (shader == null) return;
+        // Свой шейдер с альфа-смешиванием (всегда в билде), затем запасные
+        Shader shader = Shader.Find("NewCore/VaporParticle")
+            ?? Shader.Find("Mobile/Particles/Alpha Blended")
+            ?? Shader.Find("Legacy Shaders/Particles/Alpha Blended Premultiply")
+            ?? Shader.Find("Universal Render Pipeline/Particles/Unlit")
+            ?? Shader.Find("Particles/Standard Unlit");
+        if (shader == null)
+        {
+            Debug.LogWarning("PlayerHQDVape: не найден шейдер для пара. Добавь NewCore/VaporParticle или Mobile/Particles/Alpha Blended в Always Included Shaders.");
+            return;
+        }
         Material mat = new Material(shader);
         mat.mainTexture = CreateSoftVaporTexture();
-        mat.SetColor("_Color", tint);
+        if (mat.HasProperty("_BaseColor"))
+            mat.SetColor("_BaseColor", tint);
+        else if (mat.HasProperty("_Color"))
+            mat.SetColor("_Color", tint);
         mat.renderQueue = 3000;
         renderer.material = mat;
         renderer.renderMode = ParticleSystemRenderMode.Billboard;
@@ -328,30 +341,23 @@ public class PlayerHQDVape : MonoBehaviour
     }
 
     /// <summary>
-    /// Мягкая круглая текстура пара: только круг, без квадратов и полигонов.
-    /// Плавный радиальный градиент от центра к краю.
+    /// Жёсткая квадратная текстура пара: полностью непрозрачный квадрат, прозрачность снаружи.
     /// </summary>
     static Texture2D CreateSoftVaporTexture()
     {
         if (_cachedSoftVaporTexture != null) return _cachedSoftVaporTexture;
         const int size = 256;
-        var tex = new Texture2D(size, size);
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
         tex.wrapMode = TextureWrapMode.Clamp;
-        tex.filterMode = FilterMode.Bilinear;
-        tex.alphaIsTransparency = true;
+        tex.filterMode = FilterMode.Point;
         Color[] pixels = new Color[size * size];
-        float center = (size - 1) * 0.5f;
-        float radius = center * 0.98f;
+        int edge = 4; // отступ от края (внутри — квадрат)
         for (int y = 0; y < size; y++)
         {
             for (int x = 0; x < size; x++)
             {
-                float dx = x - center;
-                float dy = y - center;
-                float d = Mathf.Sqrt(dx * dx + dy * dy);
-                float t = Mathf.Clamp01(d / radius);
-                float a = 1f - Mathf.SmoothStep(0f, 1f, t);
-                a = a * a;
+                bool inside = x >= edge && x < size - edge && y >= edge && y < size - edge;
+                float a = inside ? 1f : 0f;
                 pixels[y * size + x] = new Color(1f, 1f, 1f, a);
             }
         }
@@ -554,9 +560,10 @@ public class PlayerHQDVape : MonoBehaviour
         // Обычное облако — с родителем, следует за игроком
         Transform vaporParent = vaporWorldParent != null ? vaporWorldParent : playerCamera;
         GameObject clone = Instantiate(_vaporInstance.gameObject, vaporParent);
-        clone.SetActive(true);
+        clone.SetActive(false);
         ParticleSystem ps = clone.GetComponent<ParticleSystem>();
         if (ps == null) return;
+        ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
 
         clone.transform.position = worldMouth;
         clone.transform.rotation = forwardRotation;
@@ -567,12 +574,12 @@ public class PlayerHQDVape : MonoBehaviour
         ApplyVaporSoftMaterial(ps);
         ApplyVaporColor(ps, vaporColor);
         if (!ps.collision.enabled)
-            ParticlesCollisionSetup.SetupCollisionAndSplash(ps, vaporColor, true);
+            ParticlesCollisionSetup.SetupCollisionAndSplash(ps, vaporColor, addSplash: false, vaporIgnoreCollisionLayers);
 
         float sizeBase = Mathf.Lerp(vaporMinStartSize, vaporMaxStartSize, normalizedHold);
         float sizeMul = 1f + Random.Range(-vaporSizeRandomness, vaporSizeRandomness);
-        float sizeMin = sizeBase * sizeMul * 0.75f;
-        float sizeMax = sizeBase * sizeMul * 1.35f;
+        float sizeMin = sizeBase * sizeMul * 0.9f;
+        float sizeMax = sizeBase * sizeMul * 1.6f;
 
         float exhaleDuration = Mathf.Min(vaporExhaleSpreadDuration, vaporEmitDuration);
         float rate = count / Mathf.Max(0.01f, exhaleDuration);
@@ -587,6 +594,7 @@ public class PlayerHQDVape : MonoBehaviour
         emission.rateOverTime = rate;
         emission.SetBursts(new ParticleSystem.Burst[0]);
 
+        clone.SetActive(true);
         ps.Play();
         Destroy(clone, 5.5f);
     }
@@ -601,12 +609,14 @@ public class PlayerHQDVape : MonoBehaviour
 
         // Объект в мире без родителя — кольцо летит вперёд по взгляду и расширяется
         GameObject ringGo = new GameObject("VaporRing");
+        ringGo.SetActive(false);
         ringGo.transform.SetParent(null);
         ringGo.transform.position = worldMouth;
         ringGo.transform.rotation = forwardRotation;
 
         ParticleSystem ps = ringGo.AddComponent<ParticleSystem>();
         var main = ps.main;
+        main.playOnAwake = false;
         main.duration = 1f;
         main.loop = false;
         main.startLifetime = ringLifetime;
@@ -616,7 +626,6 @@ public class PlayerHQDVape : MonoBehaviour
         main.simulationSpace = ParticleSystemSimulationSpace.World;
         main.maxParticles = ringParticleCount;
         main.gravityModifier = 0f;
-        main.playOnAwake = false;
 
         var emission = ps.emission;
         emission.enabled = false;
@@ -624,15 +633,17 @@ public class PlayerHQDVape : MonoBehaviour
         var shape = ps.shape;
         shape.enabled = false;
 
-        // Замедление вперёд по времени (имитация сопротивления воздуха) — в локальном пространстве кольца
+        // Замедление вперёд по времени (имитация сопротивления воздуха) — все в Curve mode для Unity
         var vel = ps.velocityOverLifetime;
         vel.enabled = true;
         vel.space = ParticleSystemSimulationSpace.Local;
-        vel.x = 0f;
-        vel.y = 0f;
-        vel.z = new ParticleSystem.MinMaxCurve(1f, new AnimationCurve(
+        var flatZero = new AnimationCurve(new Keyframe(0f, 0f), new Keyframe(1f, 0f));
+        var zDragCurve = new AnimationCurve(
             new Keyframe(0f, 0f),
-            new Keyframe(1f, -ringForwardSpeed * ringDrag)));
+            new Keyframe(1f, -ringForwardSpeed * ringDrag));
+        vel.x = new ParticleSystem.MinMaxCurve(1f, flatZero);
+        vel.y = new ParticleSystem.MinMaxCurve(1f, flatZero);
+        vel.z = new ParticleSystem.MinMaxCurve(1f, zDragCurve);
 
         // Размер: появление → лёгкий рост → плавное исчезновение
         var sizeOverLifetime = ps.sizeOverLifetime;
@@ -668,11 +679,13 @@ public class PlayerHQDVape : MonoBehaviour
         noise.octaveCount = 2;
         noise.quality = ParticleSystemNoiseQuality.Low;
 
-        ParticlesCollisionSetup.SetupCollisionAndSplash(ps, vaporColor, true);
+        ParticlesCollisionSetup.SetupCollisionAndSplash(ps, vaporColor, addSplash: false, vaporIgnoreCollisionLayers);
 
         var renderer = ringGo.GetComponent<ParticleSystemRenderer>();
         if (renderer != null)
             SetupVaporRenderer(renderer, vaporColor);
+
+        ringGo.SetActive(true);
 
         // Расставляем частицы по окружности (ограничено для отсутствия лага при появлении)
         int count = Mathf.Clamp(ringParticleCount, 24, 100);
@@ -718,19 +731,19 @@ public class PlayerHQDVape : MonoBehaviour
     {
         if (ps == null) return;
         var main = ps.main;
-        main.startSpeed = new ParticleSystem.MinMaxCurve(0.6f, 1.2f);
+        main.startSpeed = new ParticleSystem.MinMaxCurve(0.35f, 0.8f);
         var shape = ps.shape;
         shape.enabled = true;
         shape.shapeType = ParticleSystemShapeType.Cone;
-        shape.angle = 6f;
-        shape.radius = 0.03f;
+        shape.angle = 12f;
+        shape.radius = 0.04f;
         shape.rotation = Vector3.zero;
         var velocityOverLifetime = ps.velocityOverLifetime;
         velocityOverLifetime.enabled = true;
         velocityOverLifetime.space = ParticleSystemSimulationSpace.Local;
-        velocityOverLifetime.z = 5f;
-        velocityOverLifetime.x = new ParticleSystem.MinMaxCurve(-0.05f, 0.05f);
-        velocityOverLifetime.y = new ParticleSystem.MinMaxCurve(-0.05f, 0.05f);
+        velocityOverLifetime.z = new ParticleSystem.MinMaxCurve(1.2f, 2f);
+        velocityOverLifetime.x = new ParticleSystem.MinMaxCurve(-0.2f, 0.2f);
+        velocityOverLifetime.y = new ParticleSystem.MinMaxCurve(-0.2f, 0.2f);
     }
 
     void ApplyVaporSoftMaterial(ParticleSystem ps)
@@ -738,18 +751,6 @@ public class PlayerHQDVape : MonoBehaviour
         if (ps == null) return;
         var renderer = ps.GetComponent<ParticleSystemRenderer>();
         if (renderer == null) return;
-        Shader shader = Shader.Find("Legacy Shaders/Particles/Alpha Blended Premultiply")
-            ?? Shader.Find("Particles/Standard Unlit")
-            ?? Shader.Find("Mobile/Particles/Alpha Blended");
-        if (shader == null) return;
-        Material mat = new Material(shader);
-        mat.mainTexture = CreateSoftVaporTexture();
-        mat.SetColor("_Color", Color.white);
-        mat.renderQueue = 3000;
-        renderer.material = mat;
-        renderer.renderMode = ParticleSystemRenderMode.Billboard;
-        renderer.alignment = ParticleSystemRenderSpace.View;
-        renderer.minParticleSize = 0.001f;
-        renderer.maxParticleSize = 10f;
+        SetupVaporRenderer(renderer, Color.white);
     }
 }

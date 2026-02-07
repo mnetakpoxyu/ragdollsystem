@@ -24,6 +24,8 @@ public class PlayerInputManager : MonoBehaviour
             return;
         }
         _instance = this;
+        if (playerInputAsset == null)
+            playerInputAsset = InputSystemRuntimeFallback.GetDefaultAsset();
     }
 
     /// <summary>

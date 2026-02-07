@@ -12,7 +12,8 @@ public static class ParticlesCollisionSetup
     /// <param name="ps">Система частиц (вейп или дым кальяна).</param>
     /// <param name="splashColor">Цвет частиц распыления при ударе о стену (обычно как у пара/дыма).</param>
     /// <param name="addSplash">Добавить ли суб-эмиттер: при ударе о стену — маленькое облачко «по разным сторонам».</param>
-    public static void SetupCollisionAndSplash(ParticleSystem ps, Color splashColor, bool addSplash = true)
+    /// <param name="ignoreLayers">Слои, с которыми частицы НЕ сталкиваются (пар проходит сквозь них). Укажи слой игрока — пар будет проходить сквозь модель.</param>
+    public static void SetupCollisionAndSplash(ParticleSystem ps, Color splashColor, bool addSplash = true, LayerMask ignoreLayers = default)
     {
         if (ps == null) return;
 
@@ -23,7 +24,8 @@ public static class ParticlesCollisionSetup
         collision.dampen = new ParticleSystem.MinMaxCurve(0.92f);   // почти вся скорость теряется при ударе — пар «останавливается» о стену
         collision.bounce = new ParticleSystem.MinMaxCurve(0.12f);   // лёгкий отскок — визуально «распылился»
         collision.lifetimeLoss = 0.15f;
-        collision.collidesWith = ~0; // со всеми слоями (стены, пол, мебель)
+        // Со всеми слоями, кроме ignoreLayers — пар проходит сквозь игрока и не застревает в нём
+        collision.collidesWith = (LayerMask)(~0 & ~ignoreLayers.value);
         collision.radiusScale = 0.6f;
         collision.sendCollisionMessages = false;
 
@@ -38,6 +40,7 @@ public static class ParticlesCollisionSetup
 
         ParticleSystem splashPs = splashGo.AddComponent<ParticleSystem>();
         var main = splashPs.main;
+        main.playOnAwake = false;
         main.duration = 0.5f;
         main.loop = false;
         main.startLifetime = 0.2f;

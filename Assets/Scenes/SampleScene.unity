@@ -212,7 +212,7 @@ PrefabInstance:
     - target: {fileID: 694847209161167879, guid: 691d201409042b143af4574240386e30, type: 3}
       propertyPath: inputActionAsset
       value: 
-      objectReference: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
+      objectReference: {fileID: -944628639613478452, guid: 31c30643284fe4b0d9c4ee49f734c6ba, type: 3}
     - target: {fileID: 1857981397293619070, guid: 691d201409042b143af4574240386e30, type: 3}
       propertyPath: m_IsActive
       value: 1
@@ -336,7 +336,7 @@ PrefabInstance:
     - target: {fileID: 7890123456789012001, guid: 691d201409042b143af4574240386e30, type: 3}
       propertyPath: inputActionAsset
       value: 
-      objectReference: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
+      objectReference: {fileID: -944628639613478452, guid: 31c30643284fe4b0d9c4ee49f734c6ba, type: 3}
     m_RemovedComponents: []
     m_RemovedGameObjects:
     - {fileID: 4099707369951348303, guid: 691d201409042b143af4574240386e30, type: 3}
@@ -3691,7 +3691,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  playerInputAsset: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
+  playerInputAsset: {fileID: -944628639613478452, guid: 31c30643284fe4b0d9c4ee49f734c6ba, type: 3}
 --- !u!4 &183227033
 Transform:
   m_ObjectHideFlags: 0

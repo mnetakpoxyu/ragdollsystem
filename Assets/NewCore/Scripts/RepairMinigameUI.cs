@@ -53,7 +53,6 @@ public class RepairMinigameUI : MonoBehaviour
         canvasObj.GetComponent<CanvasScaler>().referenceResolution = new Vector2(1920, 1080);
         canvasObj.AddComponent<GraphicRaycaster>();
 
-        float centerY = 0.4f;
         float digitSpacing = 140f;
 
         var targetObj = new GameObject("TargetText");

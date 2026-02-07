@@ -4,7 +4,10 @@
 EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
-  m_Scenes: []
+  m_Scenes:
+  - enabled: 1
+    path: Assets/bushidoX.unity
+    guid: 19a20742bff3746d38ed80e23c1726ee
   m_configObjects:
-    com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 289c1b55c9541489481df5cc06664110, type: 3}
+    com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 31c30643284fe4b0d9c4ee49f734c6ba, type: 3}
   m_UseUCBPForAssetBundles: 0

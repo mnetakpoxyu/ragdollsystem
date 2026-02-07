@@ -162,14 +162,22 @@ namespace ElmanGameDevTools.PlayerSystem
             if (animator == null)
                 animator = GetComponentInChildren<Animator>();
 
+            if (inputActionAsset == null)
+                inputActionAsset = InputSystemRuntimeFallback.GetDefaultAsset();
+
             if (inputActionAsset != null)
             {
                 _playerMap = inputActionAsset.FindActionMap("Player");
-                _moveAction = _playerMap.FindAction("Move");
-                _lookAction = _playerMap.FindAction("Look");
-                _jumpAction = _playerMap.FindAction("Jump");
-                _crouchAction = _playerMap.FindAction("Crouch");
-                _playerMap.Enable();
+                if (_playerMap != null)
+                {
+                    _moveAction = _playerMap.FindAction("Move");
+                    _lookAction = _playerMap.FindAction("Look");
+                    _jumpAction = _playerMap.FindAction("Jump");
+                    _crouchAction = _playerMap.FindAction("Crouch");
+                    _playerMap.Enable();
+                }
+                else
+                    Debug.LogWarning("PlayerController: InputActionAsset has no 'Player' action map. Assign InputSystem_Actions or enable the Player map.", this);
             }
         }
 
