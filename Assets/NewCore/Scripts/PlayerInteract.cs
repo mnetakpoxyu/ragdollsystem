@@ -357,7 +357,7 @@ public class PlayerInteract : MonoBehaviour
         bool showingVoiceHint = _clientWaitingToSeat != null && _currentClient == _clientWaitingToSeat &&
             (_voiceRecordState == VoiceRecordState.Idle || _voiceRecordState == VoiceRecordState.Recording || _voiceRecordState == VoiceRecordState.HasRecording);
 
-        bool showHint = _currentDoor != null || _currentClient != null || (thirstyClient != null && PlayerCarry.Instance != null && PlayerCarry.Instance.HasDrink) || hungryClient != null || hookahClient != null || (_currentSpot != null && _currentSpot.IsClientGoneForFood && PlayerCarry.Instance != null && PlayerCarry.Instance.HasBurger) || (_currentSpot != null && _currentSpot.IsClientGoneForHookah && PlayerCarry.Instance != null && PlayerCarry.Instance.HasHookah) || _currentSpot != null || _currentMonitor != null || _currentBoombox != null || _currentDrinkStock != null || _currentFoodStock != null || _currentHookahStock != null || showingVoiceHint;
+        bool showHint = _currentDoor != null || _currentClient != null || thirstyClient != null || hungryClient != null || hookahClient != null || (_currentSpot != null && _currentSpot.IsClientGoneForFood && PlayerCarry.Instance != null && PlayerCarry.Instance.HasBurger) || (_currentSpot != null && _currentSpot.IsClientGoneForHookah && PlayerCarry.Instance != null && PlayerCarry.Instance.HasHookah) || _currentSpot != null || _currentMonitor != null || _currentBoombox != null || _currentDrinkStock != null || _currentFoodStock != null || _currentHookahStock != null || showingVoiceHint;
         if (showHint && _currentSpot != null && (_currentSpot.IsBreakdownInProgress || _currentSpot.IsBroken) && RepairMinigameUI.IsActive)
             showHint = false;
         if (hintText != null)
@@ -406,9 +406,11 @@ public class PlayerInteract : MonoBehaviour
                 {
                     hintText.text = "Смотреть камеры  [E]";
                 }
-                else if (thirstyClient != null && PlayerCarry.Instance != null && PlayerCarry.Instance.HasDrink)
+                else if (thirstyClient != null)
                 {
-                    hintText.text = "Отдать напиток  [E]";
+                    hintText.text = (PlayerCarry.Instance != null && PlayerCarry.Instance.HasDrink)
+                        ? "Дать напиток  [E]   Отказаться  [Q]"
+                        : "Отказаться  [Q]";
                 }
                 else if (_currentDrinkStock != null)
                 {
@@ -600,7 +602,7 @@ public class PlayerInteract : MonoBehaviour
             _keyPrevPressed[KeyCode.R] = IsKeyHeld(KeyCode.R);
         }
 
-        // Отказ от заказа еды по Q (отдельно от E)
+        // Отказ от заказа по Q (отдельно от E)
         if (hungryClient != null && WasKeyPressed(KeyCode.Q))
         {
             hungryClient.OnDeclineFoodOrder();
@@ -609,6 +611,11 @@ public class PlayerInteract : MonoBehaviour
         if (hookahClient != null && WasKeyPressed(KeyCode.Q))
         {
             hookahClient.OnDeclineHookahOrder();
+            return;
+        }
+        if (thirstyClient != null && WasKeyPressed(KeyCode.Q))
+        {
+            thirstyClient.OnDeclineDrinkOrder();
             return;
         }
 

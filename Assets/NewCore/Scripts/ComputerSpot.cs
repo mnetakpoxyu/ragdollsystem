@@ -98,6 +98,12 @@ public class ComputerSpot : MonoBehaviour
     [SerializeField] string waitingForFoodLabel = "Ждёт еду";
     [Tooltip("Текст над клиентом, когда он вернулся и ждёт кальян.")]
     [SerializeField] string waitingForHookahLabel = "Ждёт кальян";
+    [Tooltip("Текст над местом, когда клиент в туалете.")]
+    [SerializeField] string toiletLabel = "WC";
+    [Tooltip("Текст над местом, когда клиент идёт к компьютеру (сессия ещё не началась).")]
+    [SerializeField] string walkingToSeatLabel = "Идёт";
+    [Tooltip("Минимум реальных секунд после посадки, прежде чем могут прокнуть поломка или возгорание.")]
+    [SerializeField] float minSitSecondsBeforeEvents = 7f;
     [Tooltip("Пустой объект рядом со столом (например HookahPlace). Сюда ставится кальян при доставке — он будет виден рядом со столом.")]
     [SerializeField] Transform hookahPlace;
     [Tooltip("Пустой объект на столе, куда ставится еда при доставке (бургер будет виден на столе).")]
@@ -196,8 +202,22 @@ public class ComputerSpot : MonoBehaviour
         _clientGoneForDrink = false;
         _clientGoneForFood = false;
         _clientGoneForHookah = false;
+        _clientGoneForToilet = false;
+        _clientNotYetSeated = false;
+        _clientSatDownRealTime = -1f;
         _foodDeliveryTimeRemaining = -1f;
         SetHighlight(_highlighted);
+    }
+
+    /// <summary> Клиент сел за стол — запускаем игровую сессию. Вызывается из ClientNPC при посадке. </summary>
+    public void OnClientSatDown()
+    {
+        if (_seatedClient == null || !isOccupied || gameTime == null) return;
+        _clientNotYetSeated = false;
+        _clientSatDownRealTime = Time.time;
+        _sessionStartTimeHours = gameTime.CurrentTimeHours;
+        if (_seatedClient.HasRecordedPhrase)
+            _seatedClient.SetSessionInfo(gameTime, _sessionStartTimeHours, _sessionDurationHours);
     }
 
     /// <summary> Место, куда можно посадить нового клиента: свободное или сломанное (после починки). Для спавна: есть ли хотя бы одно такое место. </summary>
@@ -279,6 +299,8 @@ public class ComputerSpot : MonoBehaviour
     ClientNPC _seatedClient;
     float _sessionStartTimeHours;
     float _sessionDurationHours;
+    bool _clientNotYetSeated; // сессия не идёт, пока NPC не сядет
+    float _clientSatDownRealTime = -1f; // Time.time когда клиент сел (для minSitSecondsBeforeEvents)
     bool _clientGoneForDrink;
     float _remainingSessionHours;
     Canvas _timerCanvas;
@@ -287,6 +309,7 @@ public class ComputerSpot : MonoBehaviour
     bool _clientGoneForFood;
     float _foodDeliveryTimeRemaining = -1f;
     bool _clientGoneForHookah;
+    bool _clientGoneForToilet;
     Transform _placedHookahVisual;
     Transform _placedFoodVisual;
     GameObject _registeredHookahSmoke;
@@ -359,8 +382,8 @@ public class ComputerSpot : MonoBehaviour
         if (_mainCam == null)
             _mainCam = Camera.main;
 
-        // Поломка в процессе: тикаем таймер; истёк — клиент уходит, комп сломан. Пока клиент за напитком — таймер не тикает.
-        if (_breakdownInProgress && !_clientGoneForDrink)
+        // Поломка в процессе: тикаем таймер; истёк — клиент уходит, комп сломан. Пока клиент за напитком или в туалете — таймер не тикает.
+        if (_breakdownInProgress && !_clientGoneForDrink && !_clientGoneForToilet)
         {
             _breakdownTimerRemaining -= Time.deltaTime;
             if (_breakdownTimerRemaining <= 0f)
@@ -384,15 +407,16 @@ public class ComputerSpot : MonoBehaviour
         if (!isOccupied || _seatedClient == null || gameTime == null) return;
 
         float elapsed = GetElapsedHours();
-        if (!_clientGoneForDrink && !_clientGoneForFood && !_clientGoneForHookah)
+        if (!_clientGoneForDrink && !_clientGoneForFood && !_clientGoneForHookah && !_clientGoneForToilet)
         {
             if (elapsed >= _sessionDurationHours)
             {
                 EndSession();
                 return;
             }
-            // Случайная поломка за сессию. Пока клиент за напитком/едой — не ломаем.
-            if (!_breakdownRolled && _seatedClient.CurrentState == ClientNPC.State.SittingAtSeat && elapsed >= _sessionDurationHours * breakdownMinSessionElapsed)
+            // Случайная поломка за сессию. Пока клиент за напитком/едой/в туалете — не ломаем. Минимум N сек после посадки.
+            bool satLongEnough = _clientSatDownRealTime >= 0f && (Time.time - _clientSatDownRealTime) >= minSitSecondsBeforeEvents;
+            if (satLongEnough && !_breakdownRolled && _seatedClient.CurrentState == ClientNPC.State.SittingAtSeat && !_clientGoneForToilet && elapsed >= _sessionDurationHours * breakdownMinSessionElapsed)
             {
                 _breakdownRolled = true;
                 if (Random.value < breakdownChancePerSession)
@@ -402,8 +426,8 @@ public class ComputerSpot : MonoBehaviour
                 }
             }
 
-            // Редкий ивент: возгорание компьютера. Клиент уходит, комп становится сломанным, появляется дым/огонь.
-            if (!_fireRolled && !_breakdownInProgress && _seatedClient.CurrentState == ClientNPC.State.SittingAtSeat && elapsed >= _sessionDurationHours * fireMinSessionElapsed)
+            // Редкий ивент: возгорание компьютера. Минимум N сек после посадки.
+            if (satLongEnough && !_fireRolled && !_breakdownInProgress && _seatedClient.CurrentState == ClientNPC.State.SittingAtSeat && elapsed >= _sessionDurationHours * fireMinSessionElapsed)
             {
                 _fireRolled = true;
                 if (Random.value < fireChancePerSession)
@@ -414,8 +438,8 @@ public class ComputerSpot : MonoBehaviour
             }
         }
 
-        // Надпись над местом: «Ушёл», «Ждёт еду» или таймер сессии
-        bool showLabel = _seatedClient.CurrentState == ClientNPC.State.SittingAtSeat || _clientGoneForDrink || _clientGoneForFood || _clientGoneForHookah;
+        // Надпись над местом: «Ушёл», «Ждёт еду», «WC» или таймер сессии. WC висит пока NPC в туалете И пока идёт обратно (до посадки).
+        bool showLabel = _seatedClient.CurrentState == ClientNPC.State.SittingAtSeat || _seatedClient.CurrentState == ClientNPC.State.WalkingToToilet || _seatedClient.CurrentState == ClientNPC.State.InToilet || _seatedClient.CurrentState == ClientNPC.State.WalkingToSeat || _clientGoneForDrink || _clientGoneForFood || _clientGoneForHookah || _clientGoneForToilet;
         if (showLabel)
         {
             if (_timerCanvas == null)
@@ -427,6 +451,21 @@ public class ComputerSpot : MonoBehaviour
                 if (_clientGoneForDrink)
                 {
                     _timerText.text = goneLabel;
+                    _timerText.fontSize = timerFontSize;
+                    _timerText.color = timerTextColor;
+                    labelPos = GetSpotLabelPosition();
+                }
+                else if (_clientGoneForToilet)
+                {
+                    _timerText.text = toiletLabel;
+                    _timerText.fontSize = timerFontSize;
+                    _timerText.color = timerTextColor;
+                    labelPos = GetSpotLabelPosition();
+                }
+                else if (_seatedClient.CurrentState == ClientNPC.State.WalkingToSeat)
+                {
+                    // Идёт к месту: и первая посадка, и возврат после отказа в заказе (напиток/еда/кальян)
+                    _timerText.text = walkingToSeatLabel;
                     _timerText.fontSize = timerFontSize;
                     _timerText.color = timerTextColor;
                     labelPos = GetSpotLabelPosition();
@@ -506,6 +545,7 @@ public class ComputerSpot : MonoBehaviour
 
     float GetElapsedHours()
     {
+        if (_clientNotYetSeated || gameTime == null) return 0f;
         float now = gameTime.CurrentTimeHours;
         float elapsed = now - _sessionStartTimeHours;
         if (elapsed < 0f) elapsed += 24f;
@@ -544,6 +584,7 @@ public class ComputerSpot : MonoBehaviour
         _clientGoneForDrink = false;
         _clientGoneForFood = false;
         _clientGoneForHookah = false;
+        _clientGoneForToilet = false;
         _foodDeliveryTimeRemaining = -1f;
         ClientNPC client = _seatedClient;
         _seatedClient = null;
@@ -662,6 +703,29 @@ public class ComputerSpot : MonoBehaviour
     {
         if (!_clientGoneForHookah || gameTime == null) return;
         _clientGoneForHookah = false;
+        _sessionStartTimeHours = gameTime.CurrentTimeHours;
+        _sessionDurationHours = _remainingSessionHours;
+    }
+
+    /// <summary> Клиент ушёл в туалет — ставим сессию на паузу. </summary>
+    public void PauseSessionForToilet()
+    {
+        if (_seatedClient == null || !isOccupied) return;
+        _clientGoneForToilet = true;
+        _remainingSessionHours = _sessionDurationHours - GetElapsedHours();
+        _remainingSessionHours = Mathf.Max(0.01f, _remainingSessionHours);
+    }
+
+    /// <summary> Клиент вернулся из туалета и сел — возобновляем сессию. Сбрасываем лишние флаги (еда/напиток/кальян), если случайно прокатились вместе с туалетом. </summary>
+    public void ResumeSessionForToilet()
+    {
+        if (!_clientGoneForToilet || gameTime == null) return;
+        _clientGoneForToilet = false;
+        _clientGoneForFood = false;
+        _clientGoneForDrink = false;
+        _clientGoneForHookah = false;
+        _foodDeliveryTimeRemaining = -1f;
+        _clientSatDownRealTime = Time.time; // обновляем при повторной посадке — minSitSecondsBeforeEvents снова применяется
         _sessionStartTimeHours = gameTime.CurrentTimeHours;
         _sessionDurationHours = _remainingSessionHours;
     }
@@ -837,6 +901,7 @@ public class ComputerSpot : MonoBehaviour
         _clientGoneForDrink = false;
         _clientGoneForFood = false;
         _clientGoneForHookah = false;
+        _clientGoneForToilet = false;
         _foodDeliveryTimeRemaining = -1f;
         SetHighlight(_highlighted);
         if (client != null)
@@ -968,7 +1033,7 @@ public class ComputerSpot : MonoBehaviour
         Color c;
         if (HasAnyStolen || isBroken || _breakdownInProgress)
             c = brokenOutlineColor;
-        else if (_clientGoneForFood || _clientGoneForHookah)
+        else if (_clientGoneForFood || _clientGoneForHookah || _clientGoneForToilet)
             c = waitingForFoodOutlineColor;
         else if (isOccupied)
             c = occupiedOutlineColor;
@@ -1004,6 +1069,12 @@ public class ComputerSpot : MonoBehaviour
     public bool IsClientGoneForFood => _clientGoneForFood;
     /// <summary> Клиент ждёт доставку кальяна — сессия на паузе. </summary>
     public bool IsClientGoneForHookah => _clientGoneForHookah;
+    /// <summary> Клиент в туалете — сессия на паузе. </summary>
+    public bool IsClientGoneForToilet => _clientGoneForToilet;
+    /// <summary> Стул этого места (куда садится NPC). </summary>
+    public Transform Chair => chair;
+    /// <summary> Точка посадки NPC (на стуле). </summary>
+    public Transform NpcSitPoint => npcSitPoint;
     /// <summary> Точка «рта» для дыма кальяна (пустой GameObject у стола). Если задана — дым идёт из неё. </summary>
     public Transform HookahMouthPoint => hookahMouthPoint;
 
@@ -1103,6 +1174,7 @@ public class ComputerSpot : MonoBehaviour
         _clientGoneForDrink = false;
         _clientGoneForFood = false;
         _clientGoneForHookah = false;
+        _clientGoneForToilet = false;
         _foodDeliveryTimeRemaining = -1f;
         ClientNPC client = _seatedClient;
         _seatedClient = null;
@@ -1188,7 +1260,7 @@ public class ComputerSpot : MonoBehaviour
     bool _stolenMonitor;
     bool _stolenTable;
 
-    /// <summary> Посадить клиента за этот стол. NPC пойдёт к стулу и сядет. Возвращает true, если место было свободно. За сломанный или обворованный стол сажать нельзя. Баланс зачисляется при посадке. </summary>
+    /// <summary> Посадить клиента за этот стол. NPC пойдёт к стулу и сядет. Сессия начнётся только когда он сядет. Возвращает true, если место было свободно. </summary>
     public bool SeatClient(ClientNPC npc)
     {
         if (npc == null || isOccupied || isBroken || HasAnyStolen || chair == null || !npc.HasOrdered) return false;
@@ -1197,16 +1269,13 @@ public class ComputerSpot : MonoBehaviour
         _sessionDurationHours = npc.RequestedSessionHours;
         if (gameTime == null)
             gameTime = FindFirstObjectByType<GameTime>();
-        _sessionStartTimeHours = gameTime != null ? gameTime.CurrentTimeHours : 0f;
+        _clientNotYetSeated = true; // сессия начнётся в OnClientSatDown, когда NPC сядет
         isOccupied = true;
         _breakdownRolled = false;
         _fireRolled = false;
         // Зачисляем оплату за сессию только когда клиента отправили за комп
         if (npc.PaymentAmount > 0f && PlayerBalance.Instance != null)
             PlayerBalance.Instance.Add(npc.PaymentAmount);
-        // Передаём NPC данные сессии для планирования реплик в игровом времени
-        if (gameTime != null && npc.HasRecordedPhrase)
-            npc.SetSessionInfo(gameTime, _sessionStartTimeHours, _sessionDurationHours);
         SetHighlight(_highlighted); // обновить цвет обводки на красный (занято)
 
         return true;

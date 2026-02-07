@@ -23,6 +23,8 @@ public class ClientNPC : MonoBehaviour
         WaitingForFood,
         WalkingToCounterForHookah,
         WaitingForHookah,
+        WalkingToToilet,
+        InToilet,
         WalkingBackToExit
     }
 
@@ -82,6 +84,10 @@ public class ClientNPC : MonoBehaviour
     [Tooltip("Последние N минут игровой сессии — крайний момент для старта реплики. Реплика не запустится позже.")]
     [SerializeField] float lastPhraseBufferMinutes = 10f;
 
+    [Header("Ивенты (минимум после посадки)")]
+    [Tooltip("Минимум реальных секунд после посадки, прежде чем может прокнуть ЛЮБОЙ ивент (поломка, еда, напиток, кальян, туалет, вор).")]
+    [SerializeField] float minSitSecondsBeforeAnyEvent = 7f;
+
     [Header("Напиток (рандом за сессию)")]
     [Tooltip("Вероятность, что NPC захочет попить за сессию (0–1). Только один NPC одновременно может идти за напитком.")]
     [SerializeField, Range(0f, 1f)] float wantDrinkChancePerSession = 0.4f;
@@ -97,6 +103,16 @@ public class ClientNPC : MonoBehaviour
     [SerializeField] float wantFoodMinRealSeconds = 20f;
     [Tooltip("Проверять желание поесть каждые N реальных секунд.")]
     [SerializeField] float wantFoodCheckInterval = 6f;
+
+    [Header("Туалет (рандом за сессию)")]
+    [Tooltip("Вероятность, что NPC захочет в туалет за сессию (0–1). Несколько NPC могут идти в туалет одновременно (по числу туалетов).")]
+    [SerializeField, Range(0f, 1f)] float wantToiletChancePerSession = 0.25f;
+    [Tooltip("Минимальное время в реальных секундах, что NPC должен посидеть, прежде чем может захотеть в туалет.")]
+    [SerializeField] float wantToiletMinRealSeconds = 30f;
+    [Tooltip("Проверять желание в туалет каждые N реальных секунд.")]
+    [SerializeField] float wantToiletCheckInterval = 8f;
+    [Tooltip("Сколько реальных секунд NPC «в туалете» (15–20).")]
+    [SerializeField] Vector2 toiletDurationSeconds = new Vector2(15f, 20f);
 
     [Header("Кальян (рандом за сессию)")]
     [Tooltip("Вероятность, что NPC захочет покурить кальян за сессию (0–1). Только один NPC одновременно может идти за кальяном.")]
@@ -171,6 +187,13 @@ public class ClientNPC : MonoBehaviour
     bool _isThief;
     bool _theftRolled;
     Transform _runtimeBackAttachment;
+    bool _toiletRolled;
+    float _lastToiletCheckTime = -1f;
+    ToiletSpot _assignedToilet;
+    float _toiletExitTime = -1f;
+    bool _reachedToiletEntrance;
+    bool _returningFromToilet; // WC висит пока не сядем; ResumeSessionForToilet вызываем при посадке
+    Renderer[] _npcRenderers;
 
     bool IsEatingOrSmoking => (_eatingUntilTime > 0f && Time.time < _eatingUntilTime) || (_smokingUntilTime > 0f && Time.time < _smokingUntilTime);
 
@@ -234,6 +257,11 @@ public class ClientNPC : MonoBehaviour
             _currentHungryNpc = null;
         if (_currentHookahNpc == this)
             _currentHookahNpc = null;
+        if (_assignedToilet != null)
+        {
+            _assignedToilet.Release();
+            _assignedToilet = null;
+        }
     }
 
     void Start()
@@ -360,7 +388,7 @@ public class ClientNPC : MonoBehaviour
                 {
                     _currentThirstyNpc = null;
                     _assignedSpot?.ResumeSessionForClient(this);
-                    GoSitAt(_seatChair, _seatSitPoint);
+                    GoSitAtSpot(_assignedSpot);
                 }
                 break;
             case State.WalkingToCounterForFood:
@@ -381,7 +409,7 @@ public class ClientNPC : MonoBehaviour
                 {
                     _currentHungryNpc = null;
                     _assignedSpot?.ResumeSessionForFood();
-                    GoSitAt(_seatChair, _seatSitPoint);
+                    GoSitAtSpot(_assignedSpot);
                 }
                 break;
             case State.WalkingToCounterForHookah:
@@ -402,7 +430,40 @@ public class ClientNPC : MonoBehaviour
                 {
                     _currentHookahNpc = null;
                     _assignedSpot?.ResumeSessionForHookah();
-                    GoSitAt(_seatChair, _seatSitPoint);
+                    GoSitAtSpot(_assignedSpot);
+                }
+                break;
+            case State.WalkingToToilet:
+                if (_agent != null && _agent.isOnNavMesh && _assignedToilet != null)
+                {
+                    if (!_agent.pathPending && _agent.remainingDistance <= arriveDistance)
+                    {
+                        if (_assignedToilet.HasEntrancePoint && !_reachedToiletEntrance)
+                        {
+                            _reachedToiletEntrance = true;
+                            _agent.SetDestination(_assignedToilet.ApproachPosition);
+                            _lastPositionForStuck = transform.position;
+                            _lastStuckCheckTime = Time.time;
+                        }
+                        else
+                        {
+                            _state = State.InToilet;
+                            _toiletExitTime = Time.time + Random.Range(toiletDurationSeconds.x, toiletDurationSeconds.y);
+                            SetNpcVisible(false);
+                        }
+                    }
+                    else if (stuckCheckInterval > 0f && Time.time - _lastStuckCheckTime >= stuckCheckInterval)
+                        TryUnstuckToToilet();
+                }
+                break;
+            case State.InToilet:
+                if (_toiletExitTime > 0f && Time.time >= _toiletExitTime)
+                {
+                    SetNpcVisible(true);
+                    _assignedToilet?.Release();
+                    _assignedToilet = null;
+                    _returningFromToilet = true; // ResumeSessionForToilet — при посадке, чтобы WC висело пока идёт
+                    GoSitAtSpot(_assignedSpot);
                 }
                 break;
             case State.WalkingBackToExit:
@@ -415,6 +476,15 @@ public class ClientNPC : MonoBehaviour
                     if (!_agent.pathPending && _agent.remainingDistance <= arriveDistance)
                     {
                         _state = State.SittingAtSeat;
+                        if (_returningFromToilet)
+                        {
+                            _returningFromToilet = false;
+                            _assignedSpot?.ResumeSessionForToilet();
+                        }
+                        else
+                        {
+                            _assignedSpot?.OnClientSatDown();
+                        }
                         if (_seatChair != null)
                         {
                             Transform pose = _seatSitPoint != null ? _seatSitPoint : _seatChair;
@@ -474,13 +544,16 @@ public class ClientNPC : MonoBehaviour
                     }
                 }
 
-                // Нельзя идти за напитком/едой/кальяном во время еды или курения; ремонт возможен. Нельзя, если уже сломался компьютер.
-                // Несколько ивентов параллельно: кто-то за водой, кто-то за едой, кто-то за кальяном — проверяем только свой тип.
-                if (_assignedSpot != null && !_assignedSpot.IsClientGoneForDrink && !_assignedSpot.IsClientGoneForFood && !_assignedSpot.IsClientGoneForHookah && !_assignedSpot.IsBreakdownInProgress && !IsEatingOrSmoking)
+                // Нельзя идти за напитком/едой/кальяном/туалетом во время еды или курения; ремонт возможен. Нельзя, если уже сломался компьютер.
+                // Важно: только ОДИН ивент «ухода» за кадр — иначе могут прокатиться туалет+еда одновременно и после возвращения будет «Ждёт еду».
+                // Минимум minSitSecondsBeforeAnyEvent секунд после посадки — никакой ивент не прокнет.
+                if (_assignedSpot != null && !_assignedSpot.IsClientGoneForDrink && !_assignedSpot.IsClientGoneForFood && !_assignedSpot.IsClientGoneForHookah && !_assignedSpot.IsClientGoneForToilet && !_assignedSpot.IsBreakdownInProgress && !IsEatingOrSmoking)
                 {
-                    if (!_drinkRolled && _currentThirstyNpc == null)
+                    float satFor = Time.time - _sitDownRealTime;
+                    bool minTimePassed = satFor >= minSitSecondsBeforeAnyEvent;
+                    bool triggered = false;
+                    if (minTimePassed && !triggered && !_drinkRolled && _currentThirstyNpc == null)
                     {
-                        float satFor = Time.time - _sitDownRealTime;
                         if (satFor >= wantDrinkMinRealSeconds && (Time.time - _lastDrinkCheckTime) >= wantDrinkCheckInterval)
                         {
                             _lastDrinkCheckTime = Time.time;
@@ -488,12 +561,12 @@ public class ClientNPC : MonoBehaviour
                             {
                                 _drinkRolled = true;
                                 RequestDrink();
+                                triggered = true;
                             }
                         }
                     }
-                    if (!_foodRolled && _currentHungryNpc == null)
+                    if (minTimePassed && !triggered && !_foodRolled && _currentHungryNpc == null)
                     {
-                        float satFor = Time.time - _sitDownRealTime;
                         if (satFor >= wantFoodMinRealSeconds && (Time.time - _lastFoodCheckTime) >= wantFoodCheckInterval)
                         {
                             _lastFoodCheckTime = Time.time;
@@ -501,12 +574,12 @@ public class ClientNPC : MonoBehaviour
                             {
                                 _foodRolled = true;
                                 RequestFood();
+                                triggered = true;
                             }
                         }
                     }
-                    if (!_hookahRolled && _currentHookahNpc == null)
+                    if (minTimePassed && !triggered && !_hookahRolled && _currentHookahNpc == null)
                     {
-                        float satFor = Time.time - _sitDownRealTime;
                         if (satFor >= wantHookahMinRealSeconds && (Time.time - _lastHookahCheckTime) >= wantHookahCheckInterval)
                         {
                             _lastHookahCheckTime = Time.time;
@@ -514,6 +587,19 @@ public class ClientNPC : MonoBehaviour
                             {
                                 _hookahRolled = true;
                                 RequestHookah();
+                                triggered = true;
+                            }
+                        }
+                    }
+                    if (minTimePassed && !triggered && !_toiletRolled && ToiletSpot.GetFreeToiletCount() > 0)
+                    {
+                        if (satFor >= wantToiletMinRealSeconds && (Time.time - _lastToiletCheckTime) >= wantToiletCheckInterval)
+                        {
+                            _lastToiletCheckTime = Time.time;
+                            if (Random.value < wantToiletChancePerSession)
+                            {
+                                _toiletRolled = true;
+                                RequestToilet();
                             }
                         }
                     }
@@ -522,7 +608,7 @@ public class ClientNPC : MonoBehaviour
                 if (_isThief && !_theftRolled && _assignedSpot != null && _sitDownRealTime >= 0f)
                 {
                     float satRealSeconds = Time.time - _sitDownRealTime;
-                    if (satRealSeconds >= theftMinRealSeconds)
+                    if (satRealSeconds >= minSitSecondsBeforeAnyEvent && satRealSeconds >= theftMinRealSeconds)
                     {
                         _theftRolled = true;
                         if (Random.value < theftChancePerSession)
@@ -553,7 +639,7 @@ public class ClientNPC : MonoBehaviour
 
     void UpdateAnimator()
     {
-        bool walking = _state == State.WalkingToCounter || _state == State.WalkingToSeat || _state == State.WalkingToCounterForDrink || _state == State.WalkingToCounterForFood || _state == State.WalkingToCounterForHookah || _state == State.WalkingBackToExit;
+        bool walking = _state == State.WalkingToCounter || _state == State.WalkingToSeat || _state == State.WalkingToCounterForDrink || _state == State.WalkingToCounterForFood || _state == State.WalkingToCounterForHookah || _state == State.WalkingToToilet || _state == State.WalkingBackToExit;
         bool idle = _state == State.WaitingAtDoor || _state == State.WaitingAtCounter || _state == State.WaitingForDrink || _state == State.WaitingForFood || _state == State.WaitingForHookah;
         bool sitting = _state == State.SittingAtSeat;
 
@@ -583,6 +669,32 @@ public class ClientNPC : MonoBehaviour
         {
             _agent.ResetPath();
             _agent.SetDestination(_seatChair.position);
+        }
+    }
+
+    void TryUnstuckToToilet()
+    {
+        _lastStuckCheckTime = Time.time;
+        float moved = Vector3.Distance(transform.position, _lastPositionForStuck);
+        _lastPositionForStuck = transform.position;
+        if (moved < stuckMinMove && _assignedToilet != null && _agent != null && _agent.isOnNavMesh)
+        {
+            _agent.ResetPath();
+            Vector3 dest = _assignedToilet.HasEntrancePoint && !_reachedToiletEntrance
+                ? _assignedToilet.EntrancePosition
+                : _assignedToilet.ApproachPosition;
+            _agent.SetDestination(dest);
+        }
+    }
+
+    void SetNpcVisible(bool visible)
+    {
+        if (_npcRenderers == null)
+            _npcRenderers = GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < _npcRenderers.Length; i++)
+        {
+            if (_npcRenderers[i] != null)
+                _npcRenderers[i].enabled = visible;
         }
     }
 
@@ -663,6 +775,11 @@ public class ClientNPC : MonoBehaviour
         wantFoodChancePerSession = other.wantFoodChancePerSession;
         wantFoodMinRealSeconds = other.wantFoodMinRealSeconds;
         wantFoodCheckInterval = other.wantFoodCheckInterval;
+        minSitSecondsBeforeAnyEvent = other.minSitSecondsBeforeAnyEvent;
+        wantToiletChancePerSession = other.wantToiletChancePerSession;
+        wantToiletMinRealSeconds = other.wantToiletMinRealSeconds;
+        wantToiletCheckInterval = other.wantToiletCheckInterval;
+        toiletDurationSeconds = other.toiletDurationSeconds;
         wantHookahChancePerSession = other.wantHookahChancePerSession;
         wantHookahMinRealSeconds = other.wantHookahMinRealSeconds;
         wantHookahCheckInterval = other.wantHookahCheckInterval;
@@ -738,6 +855,12 @@ public class ClientNPC : MonoBehaviour
         _smokingUntilTime = -1f;
         _nextHookahVaporTime = -1f;
         _sitDownRealTime = -1f;
+        _toiletRolled = false;
+        _lastToiletCheckTime = -1f;
+        _assignedToilet = null;
+        _toiletExitTime = -1f;
+        _reachedToiletEntrance = false;
+        _returningFromToilet = false;
         _prevAnimState = (State)(-1);
         if (_anim != null)
         {
@@ -806,7 +929,7 @@ public class ClientNPC : MonoBehaviour
         }
     }
 
-    /// <summary> Игрок отдал напиток. NPC получает, игрок — оплату, NPC идёт обратно на место. После ухода от стойки — даём спавнеру шанс заспавнить следующего. </summary>
+    /// <summary> Игрок отдал напиток (E). NPC получает, игрок — оплату, NPC идёт обратно на место. </summary>
     public void OnReceiveDrink()
     {
         if (_state != State.WaitingForDrink) return;
@@ -816,7 +939,18 @@ public class ClientNPC : MonoBehaviour
             PlayerBalance.Instance.Add(PlayerCarry.Instance.DrinkPaymentAmount);
         _currentThirstyNpc = null;
         _assignedSpot?.ResumeSessionForClient(this);
-        GoSitAt(_seatChair, _seatSitPoint);
+        GoSitAtSpot(_assignedSpot);
+        var spawner = UnityEngine.Object.FindFirstObjectByType<ClientNPCSpawner>();
+        spawner?.OnClientLeftCounter();
+    }
+
+    /// <summary> Игрок отказался дать напиток (Q). NPC идёт обратно на место без напитка. </summary>
+    public void OnDeclineDrinkOrder()
+    {
+        if (_state != State.WaitingForDrink) return;
+        _currentThirstyNpc = null;
+        _assignedSpot?.ResumeSessionForClient(this);
+        GoSitAtSpot(_assignedSpot);
         var spawner = UnityEngine.Object.FindFirstObjectByType<ClientNPCSpawner>();
         spawner?.OnClientLeftCounter();
     }
@@ -852,7 +986,7 @@ public class ClientNPC : MonoBehaviour
         if (PlayerBalance.Instance != null && PlayerCarry.Instance != null)
             PlayerBalance.Instance.Add(PlayerCarry.Instance.BurgerPaymentAmount);
         _assignedSpot?.OnFoodOrderAccepted(this);
-        GoSitAt(_seatChair, _seatSitPoint);
+        GoSitAtSpot(_assignedSpot);
         var spawner = UnityEngine.Object.FindFirstObjectByType<ClientNPCSpawner>();
         spawner?.OnClientLeftCounter();
     }
@@ -863,7 +997,7 @@ public class ClientNPC : MonoBehaviour
         if (_state != State.WaitingForFood) return;
         _currentHungryNpc = null;
         _assignedSpot?.ResumeSessionForFood();
-        GoSitAt(_seatChair, _seatSitPoint);
+        GoSitAtSpot(_assignedSpot);
         var spawner = UnityEngine.Object.FindFirstObjectByType<ClientNPCSpawner>();
         spawner?.OnClientLeftCounter();
     }
@@ -882,6 +1016,36 @@ public class ClientNPC : MonoBehaviour
         _currentHungryNpc = null;
         _assignedSpot?.OnFoodDelivered();
         _eatingUntilTime = Time.time + eatingDurationRealSeconds;
+    }
+
+    /// <summary> NPC захотел в туалет: встаёт, сессия на паузе, идёт к свободному туалету. Если туалетов нет — не идёт. </summary>
+    void RequestToilet()
+    {
+        var toilet = ToiletSpot.GetRandomFreeToilet();
+        if (toilet == null || _assignedSpot == null || _seatChair == null || _agent == null) return;
+        if (!toilet.TryOccupy(this)) return;
+
+        _assignedToilet = toilet;
+        _reachedToiletEntrance = false;
+        _assignedSpot.PauseSessionForToilet();
+        _agent.enabled = true;
+        Vector3 standPos = _seatChair.position + _seatChair.forward * 0.5f;
+        transform.SetPositionAndRotation(standPos, _seatChair.rotation);
+        EnsureOnNavMesh();
+        if (_agent.isOnNavMesh)
+        {
+            Vector3 firstTarget = toilet.HasEntrancePoint ? toilet.EntrancePosition : toilet.ApproachPosition;
+            _agent.SetDestination(firstTarget);
+            _state = State.WalkingToToilet;
+            _lastPositionForStuck = transform.position;
+            _lastStuckCheckTime = Time.time;
+        }
+        else
+        {
+            toilet.Release();
+            _assignedToilet = null;
+            _assignedSpot.ResumeSessionForToilet();
+        }
     }
 
     /// <summary> NPC захотел покурить кальян: встаёт, сессия на паузе, идёт к стойке. </summary>
@@ -915,7 +1079,7 @@ public class ClientNPC : MonoBehaviour
         if (PlayerBalance.Instance != null && PlayerCarry.Instance != null)
             PlayerBalance.Instance.Add(PlayerCarry.Instance.HookahPaymentAmount);
         _assignedSpot?.OnHookahOrderAccepted(this);
-        GoSitAt(_seatChair, _seatSitPoint);
+        GoSitAtSpot(_assignedSpot);
         var spawner = UnityEngine.Object.FindFirstObjectByType<ClientNPCSpawner>();
         spawner?.OnClientLeftCounter();
     }
@@ -926,7 +1090,7 @@ public class ClientNPC : MonoBehaviour
         if (_state != State.WaitingForHookah) return;
         _currentHookahNpc = null;
         _assignedSpot?.ResumeSessionForHookah();
-        GoSitAt(_seatChair, _seatSitPoint);
+        GoSitAtSpot(_assignedSpot);
         var spawner = UnityEngine.Object.FindFirstObjectByType<ClientNPCSpawner>();
         spawner?.OnClientLeftCounter();
     }
@@ -1041,6 +1205,16 @@ public class ClientNPC : MonoBehaviour
         _agent.SetDestination(_exitPoint.position);
         _lastPositionForStuck = transform.position;
         _lastStuckCheckTime = Time.time;
+    }
+
+    /// <summary>
+    /// Вернуться на место в назначенном споте (использует Chair и NpcSitPoint спота — гарантирует правильное место).
+    /// Вызывать при возврате с напитка/еды/кальяна/туалета.
+    /// </summary>
+    void GoSitAtSpot(ComputerSpot spot)
+    {
+        if (spot == null || spot.Chair == null) return;
+        GoSitAt(spot.Chair, spot.NpcSitPoint);
     }
 
     /// <summary>
