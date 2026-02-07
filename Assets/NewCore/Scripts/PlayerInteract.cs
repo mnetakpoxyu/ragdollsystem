@@ -77,6 +77,7 @@ public class PlayerInteract : MonoBehaviour
     const string HintRepair = "Удерживайте [E] — починка";
     const string HintRepairMinigame = "Починить [E]";
     const string HintExtinguishVape = "Потушите паром вейпа: затяжка [V], направьте пар в компьютер. Осталось затяжек: ";
+    const string HintEjectClient = "Выгнать  [E]";
 
     void Start()
     {
@@ -385,6 +386,8 @@ public class PlayerInteract : MonoBehaviour
                         hintText.text = (repairMinigameUI != null) ? HintRepairMinigame : HintRepair;
                     else if (!_currentSpot.IsOccupied && !_currentSpot.IsBroken && _clientWaitingToSeat != null && _clientWaitingToSeat.AssignedSpot == _currentSpot)
                         hintText.text = HintSeatClient;
+                    else if (_currentSpot.IsOccupied && _currentSpot.IsClientSittingAtSeat)
+                        hintText.text = HintEjectClient;
                     else
                         hintText.text = _currentSpot.IsOccupied ? HintOccupied : HintFree;
                 }
@@ -607,6 +610,11 @@ public class PlayerInteract : MonoBehaviour
                 return;
             }
 
+            if (_currentSpot != null && _currentSpot.IsOccupied && _currentSpot.IsClientSittingAtSeat)
+            {
+                _currentSpot.EjectSeatedClient();
+                return;
+            }
             if (thirstyClient != null && PlayerCarry.Instance != null && PlayerCarry.Instance.HasDrink)
             {
                 thirstyClient.OnReceiveDrink();

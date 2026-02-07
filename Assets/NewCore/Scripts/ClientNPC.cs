@@ -935,6 +935,14 @@ public class ClientNPC : MonoBehaviour
         _lastStuckCheckTime = Time.time;
     }
 
+    /// <summary> Снять этого NPC с «очереди» у стойки (напиток/еда/кальян), если он там. Вызывать перед выгоном, чтобы другой клиент мог пойти за заказом. </summary>
+    public void ReleaseFromCounterIfAny()
+    {
+        if (_currentThirstyNpc == this) _currentThirstyNpc = null;
+        if (_currentHungryNpc == this) _currentHungryNpc = null;
+        if (_currentHookahNpc == this) _currentHookahNpc = null;
+    }
+
     /// <summary> Сессия закончилась — встать и уйти к точке выхода (спавна), затем исчезнуть. Вызывает ComputerSpot после очистки места. </summary>
     public void LeaveAndGoToExit()
     {

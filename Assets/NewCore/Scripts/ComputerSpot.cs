@@ -506,6 +506,36 @@ public class ComputerSpot : MonoBehaviour
         spawner?.OnClientLeftComputer();
     }
 
+    /// <summary> Игрок выгнал клиента: сбрасываются заказы (кальян, еда), сессия и вопросы, клиент уходит из клуба. Возврат за сессию. </summary>
+    public void EjectSeatedClient()
+    {
+        if (_seatedClient == null || !isOccupied) return;
+        if (_seatedClient.CurrentState != ClientNPC.State.SittingAtSeat) return;
+
+        float refund = _seatedClient.PaymentAmount;
+        _seatedClient.ReleaseFromCounterIfAny();
+        DestroyTimer();
+        _breakdownInProgress = false;
+        _breakdownRolled = false;
+        ClearPlacedHookah();
+        ClearPlacedFood();
+        _clientGoneForDrink = false;
+        _clientGoneForFood = false;
+        _clientGoneForHookah = false;
+        _foodDeliveryTimeRemaining = -1f;
+        ClientNPC client = _seatedClient;
+        _seatedClient = null;
+        isOccupied = false;
+        SetHighlight(_highlighted);
+
+        if (refund > 0f && PlayerBalance.Instance != null)
+            PlayerBalance.Instance.Add(-refund);
+        if (client != null)
+            client.LeaveAndGoToExit();
+        var spawner = FindFirstObjectByType<ClientNPCSpawner>();
+        spawner?.OnClientLeftComputer();
+    }
+
     /// <summary> Таймаут починки: клиент ушёл, комп сломан. Клиенту возвращаем деньги за сессию. Запускаем спавн нового клиента. </summary>
     void EndSessionDueToBreakdown()
     {
@@ -936,6 +966,9 @@ public class ComputerSpot : MonoBehaviour
         get => isOccupied;
         set => isOccupied = value;
     }
+
+    /// <summary> Клиент сейчас сидит за столом (не ушёл за напитком/едой/кальяном). Нужно для подсказки «Выгнать». </summary>
+    public bool IsClientSittingAtSeat => _seatedClient != null && _seatedClient.CurrentState == ClientNPC.State.SittingAtSeat;
 
     /// <summary> Комп сломан (клиент ушёл по таймауту или сломан пустой). Пока не починишь — новое место не даётся. </summary>
     public bool IsBroken => isBroken;
